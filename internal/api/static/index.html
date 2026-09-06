@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'">
+  <title>DRAW Research</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header>
+    <h1>DRAW Research</h1>
+    <p class="sub">Deterministic deep research engine. Submit a query to begin.</p>
+  </header>
+  <main>
+    <section id="log" aria-live="polite" aria-relevant="additions"></section>
+  </main>
+  <footer>
+    <form id="composer" autocomplete="off">
+      <input id="query" type="text" placeholder="Research query…" required aria-label="Research query">
+      <input id="seeds" type="text" placeholder="seed URLs, comma-separated (optional)" aria-label="Seed URLs">
+      <button id="submit" type="submit">Start research</button>
+      <button id="new-session" type="button">New session</button>
+    </form>
+  </footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>

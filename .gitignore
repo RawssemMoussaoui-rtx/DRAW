@@ -1,0 +1,58 @@
+# Go build outputs
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.o
+*.a
+*.out
+*.app
+
+# Compiled Go binary at repo root
+/rd-engine.exe
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Test binaries and artifacts
+*.test
+*.prof
+/coverage.txt
+/coverage.out
+/coverage.html
+/cover.out
+
+# Coverage profiles (any location)
+coverage*.txt
+coverage*.out
+coverage*.html
+*.coverprofile
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*~
+# GoLand / JetBrains
+.idea/
+.vscode/
+
+# Generated benchmark artifacts (kept local; reports reference them)
+/bench/
+/NULL
+/opt_browser.txt
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment / secret files
+.env
+.env.*
+
+# End of .gitignore
