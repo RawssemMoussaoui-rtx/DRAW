@@ -72,19 +72,20 @@ type Master struct {
 	observer     EventObserver
 	tasksPersist TaskPersistence
 
-	mu           sync.Mutex
-	state        *ResearchState
-	tasks        map[model.TaskID]model.Task
-	pending      map[model.TaskID]bool
-	redisc       map[model.TaskID]int
-	dropped      map[model.TaskID]bool
-	stop         chan struct{}
-	runErr       error
-	StopPending  bool
-	cancelled    bool
-	draining     bool
-	drainTimeout time.Duration
-	cancelFn     context.CancelFunc
+	mu             sync.Mutex
+	state          *ResearchState
+	tasks          map[model.TaskID]model.Task
+	pending        map[model.TaskID]bool
+	redisc         map[model.TaskID]int
+	dropped        map[model.TaskID]bool
+	lastQualityMap map[model.SourceID]float64
+	stop           chan struct{}
+	runErr         error
+	StopPending    bool
+	cancelled      bool
+	draining       bool
+	drainTimeout   time.Duration
+	cancelFn       context.CancelFunc
 }
 
 type MasterOption func(*Master)
@@ -103,20 +104,21 @@ func WithIngestion(in Ingestion) MasterOption {
 
 func NewMaster(cfg config.SchedulerConfig, orch Orchestration, opts ...MasterOption) *Master {
 	m := &Master{
-		cfg:          cfg,
-		orch:         orch,
-		sessions:     NewMemorySessionStore(),
-		evidence:     NoopEvidenceReader(),
-		intent:       NewIntentParser(DefaultIntentConfig()),
-		planner:      NewPlanMaker(cfg),
-		decider:      NewDecider(cfg),
-		ingest:       noopIngestionFactory(),
-		stop:         make(chan struct{}),
-		tasks:        map[model.TaskID]model.Task{},
-		pending:      map[model.TaskID]bool{},
-		redisc:       map[model.TaskID]int{},
-		dropped:      map[model.TaskID]bool{},
-		drainTimeout: 5 * time.Second,
+		cfg:            cfg,
+		orch:           orch,
+		sessions:       NewMemorySessionStore(),
+		evidence:       NoopEvidenceReader(),
+		intent:         NewIntentParser(DefaultIntentConfig()),
+		planner:        NewPlanMaker(cfg),
+		decider:        NewDecider(cfg),
+		ingest:         noopIngestionFactory(),
+		stop:           make(chan struct{}),
+		tasks:          map[model.TaskID]model.Task{},
+		pending:        map[model.TaskID]bool{},
+		redisc:         map[model.TaskID]int{},
+		dropped:        map[model.TaskID]bool{},
+		lastQualityMap: map[model.SourceID]float64{},
+		drainTimeout:   5 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -541,6 +543,15 @@ func (m *Master) chargeOnAdmit(t model.Task) bool {
 }
 
 func (m *Master) observeAndDecide(ctx context.Context, t model.Task, r *model.TaskResult) bool {
+	// extractAndStoreEvidence is the single evidence-handling sub-step of this
+	// cycle. It stores all evidence, persists relations, and then — as its
+	// final step — invokes recomputeVerification once. Because
+	// extractAndStoreEvidence is called exactly once here, the verification
+	// recompute acts as the synchronization barrier for the entire cycle (once
+	// per observeAndDecide, never per item). Do not add further
+	// extractAndStoreEvidence calls in this function or move the recompute into
+	// the extraction loop without relocating the barrier call to the end of
+	// this function instead.
 	m.extractAndStoreEvidence(ctx, t, r)
 
 	m.updateProgress(t, *r)

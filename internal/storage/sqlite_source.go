@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"draw/internal/model"
@@ -15,6 +16,8 @@ const defaultBaselineQuality = 0.3
 type SQLiteSourceRegistry struct {
 	db              *sql.DB
 	baselineQuality float64
+	mu              sync.RWMutex
+	cache           map[string]*model.SourceProfile
 }
 
 func NewSQLiteSourceRegistry(db *sql.DB, baselineQuality float64) (*SQLiteSourceRegistry, error) {
@@ -24,12 +27,22 @@ func NewSQLiteSourceRegistry(db *sql.DB, baselineQuality float64) (*SQLiteSource
 	return &SQLiteSourceRegistry{
 		db:              db,
 		baselineQuality: baselineQuality,
+		cache:           make(map[string]*model.SourceProfile),
 	}, nil
 }
 
 func (r *SQLiteSourceRegistry) Lookup(domain string) (*model.SourceProfile, bool) {
-	ctx := context.Background()
 	domain = strings.ToLower(domain)
+
+	r.mu.RLock()
+	if cached, ok := r.cache[domain]; ok {
+		cp := *cached
+		r.mu.RUnlock()
+		return &cp, true
+	}
+	r.mu.RUnlock()
+
+	ctx := context.Background()
 
 	const q = `SELECT domain, class, quality_score, crawl_depth_limit, per_domain_limit, rate_limit_rpm, auth_type, last_observed_at, provisional, denied FROM source_profiles WHERE domain = ?`
 
@@ -45,7 +58,7 @@ func (r *SQLiteSourceRegistry) Lookup(domain string) (*model.SourceProfile, bool
 	)
 
 	if err == sql.ErrNoRows {
-		return &model.SourceProfile{
+		result := &model.SourceProfile{
 			Domain:          domain,
 			Class:           model.SourceClassUnknown,
 			QualityScore:    r.baselineQuality,
@@ -56,7 +69,14 @@ func (r *SQLiteSourceRegistry) Lookup(domain string) (*model.SourceProfile, bool
 			LastObservedAt:  time.Time{},
 			Provisional:     true,
 			Denied:          false,
-		}, true
+		}
+		r.mu.Lock()
+		if _, exists := r.cache[domain]; !exists {
+			r.cache[domain] = result
+		}
+		r.mu.Unlock()
+		cp := *result
+		return &cp, true
 	}
 	if err != nil {
 		return nil, false
@@ -78,10 +98,24 @@ func (r *SQLiteSourceRegistry) Lookup(domain string) (*model.SourceProfile, bool
 		// denylist (ShouldDeny) — can observe p.Denied and REJECT the domain.
 		// Returning (nil,false) would make an explicit deny indistinguishable
 		// from an unknown domain, silently bypassing H29/Cor.5.
-		return &p, true
+		r.mu.Lock()
+		if _, exists := r.cache[domain]; !exists {
+			r.cache[domain] = &p
+		}
+		r.mu.Unlock()
+		cp := p
+		return &cp, true
 	}
 
-	return &p, true
+	r.mu.Lock()
+	if _, exists := r.cache[domain]; !exists {
+		cp := p
+		r.cache[domain] = &cp
+	}
+	cached := r.cache[domain]
+	r.mu.Unlock()
+	cp := *cached
+	return &cp, true
 }
 
 func (r *SQLiteSourceRegistry) Upsert(p model.SourceProfile) error {
@@ -90,8 +124,8 @@ func (r *SQLiteSourceRegistry) Upsert(p model.SourceProfile) error {
 
 	const q = `INSERT INTO source_profiles 
 		(domain, class, quality_score, crawl_depth_limit, per_domain_limit, rate_limit_rpm, auth_type, last_observed_at, provisional, denied)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
-	ON CONFLICT(domain) DO UPDATE SET
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+ON CONFLICT(domain) DO UPDATE SET
 		class = excluded.class,
 		quality_score = excluded.quality_score,
 		crawl_depth_limit = excluded.crawl_depth_limit,
@@ -109,6 +143,9 @@ func (r *SQLiteSourceRegistry) Upsert(p model.SourceProfile) error {
 	if err != nil {
 		return fmt.Errorf("source registry upsert: %w", err)
 	}
+	r.mu.Lock()
+	delete(r.cache, domain)
+	r.mu.Unlock()
 	return nil
 }
 
@@ -144,6 +181,9 @@ func (r *SQLiteSourceRegistry) ProvisionalUpsert(p model.SourceProfile) error {
 	if err != nil {
 		return fmt.Errorf("source registry provisional upsert: %w", err)
 	}
+	r.mu.Lock()
+	delete(r.cache, domain)
+	r.mu.Unlock()
 	return nil
 }
 
@@ -160,5 +200,8 @@ func (r *SQLiteSourceRegistry) Deny(domain string) error {
 	if err != nil {
 		return fmt.Errorf("source registry deny: %w", err)
 	}
+	r.mu.Lock()
+	delete(r.cache, domain)
+	r.mu.Unlock()
 	return nil
 }

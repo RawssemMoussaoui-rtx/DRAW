@@ -76,6 +76,15 @@ func (m *Master) extractAndStoreEvidence(ctx context.Context, t model.Task, r *m
 		_ = m.es.PutRelation(rel)
 	}
 
+	// Synchronization barrier: recomputeVerification runs exactly once per
+	// extractAndStoreEvidence call — hence exactly once per observeAndDecide
+	// cycle (observeAndDecide invokes extractAndStoreEvidence once). It is
+	// placed AFTER the item Put loop and relation persistence so verification
+	// is never recomputed per evidence item or per sub-call. See
+	// recomputeVerification for the dirty-topic accumulation contract.
+	// Do not move this call inside the extraction/relation loops, and do not
+	// add additional extractAndStoreEvidence calls in observeAndDecide without
+	// relocating this barrier to the end of that function instead.
 	m.recomputeVerification(items, existing)
 }
 
@@ -119,6 +128,23 @@ func (m *Master) upsertSourceProfiles(items []model.Evidence) {
 	}
 }
 
+// recomputeVerification is the single per-cycle synchronization barrier for
+// verification recompute. observeAndDecide invokes extractAndStoreEvidence
+// exactly once; that call's final step is to invoke this function, so it runs
+// exactly once per observeAndDecide cycle and never per evidence item or per
+// sub-call.
+//
+// Dirty-topic accumulation (in-memory, no extra storage round-trips): the set
+// of topics requiring recomputation is assembled from two sources:
+//   - the topics of the freshly stored newItems (the per-cycle dirty set); and
+//   - any topic owned by an existing evidence item whose source QualityScore
+//     changed since the previous call (quality-drift), detected by diffing
+//     currentSourceQualities against m.lastQualityMap, which is snapshotted at
+//     the end of every call.
+//
+// Only affected topics are re-evaluated against the persisted existing store;
+// everything else is carried over, keeping the barrier cheap and stable across
+// cycles.
 func (m *Master) recomputeVerification(newItems, existing []model.Evidence) {
 	allItems := append(append([]model.Evidence{}, newItems...), existing...)
 	qualities := make(map[model.EvidenceID]float64, len(allItems))
@@ -138,6 +164,32 @@ func (m *Master) recomputeVerification(newItems, existing []model.Evidence) {
 			topics[ev.Topic] = true
 		}
 	}
+
+	// Quality-drift detection: expand the dirty-topic set with topics whose
+	// sources had quality-score changes since the last recomputeVerification
+	// call (zero extra queries — uses existing in-memory data only).
+	currentSourceQualities := make(map[model.SourceID]float64, len(allItems))
+	for _, ev := range allItems {
+		if m.reg != nil {
+			if p, ok := m.reg.Lookup(string(ev.SourceID)); ok && p != nil {
+				currentSourceQualities[ev.SourceID] = p.QualityScore
+			}
+		}
+	}
+	for _, ev := range existing {
+		curr, currExists := currentSourceQualities[ev.SourceID]
+		if !currExists {
+			continue
+		}
+		prev, prevExists := m.lastQualityMap[ev.SourceID]
+		if !prevExists || prev != curr {
+			if ev.Topic != "" {
+				topics[ev.Topic] = true
+			}
+		}
+	}
+	// Update the quality snapshot for the next call.
+	m.lastQualityMap = currentSourceQualities
 
 	for topic := range topics {
 		rels := m.es.FindRelations(topic)
