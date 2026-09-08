@@ -3,16 +3,18 @@ package model
 import "time"
 
 type Evidence struct {
-	ID           EvidenceID
-	SessionID    SessionID
-	TaskID       TaskID
-	SourceID     SourceID
-	Topic        string
-	Claim        string
-	Value        string
-	Confidence   float64
-	Verification VerificationState
-	CollectedAt  time.Time
+	ID            EvidenceID
+	SessionID     SessionID
+	TaskID        TaskID
+	OriginURL     *string
+	ExtractionSeq *int
+	SourceID      SourceID
+	Topic         string
+	Claim         string
+	Value         string
+	Confidence    float64
+	Verification  VerificationState
+	CollectedAt   time.Time
 }
 
 type EvidenceRelation struct {

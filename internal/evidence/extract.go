@@ -77,16 +77,26 @@ func Extract(t model.Task, r model.TaskResult, topics []string) []model.Evidence
 		return nil
 	}
 
+	originURLStr := ""
+	if t.URL != nil {
+		originURLStr = t.URL.String()
+	}
+
 	base := buildEvidenceBase(t, r, topic, sourceID, confidence)
+	seq := 0
 	for i := range items {
+		s := seq
 		items[i].SessionID = base.SessionID
 		items[i].TaskID = base.TaskID
+		items[i].OriginURL = &originURLStr
+		items[i].ExtractionSeq = &s
 		items[i].SourceID = base.SourceID
 		items[i].Topic = base.Topic
 		items[i].Confidence = base.Confidence
 		items[i].Verification = base.Verification
 		items[i].CollectedAt = base.CollectedAt
 		items[i].ID = ""
+		seq++
 	}
 	return items
 }

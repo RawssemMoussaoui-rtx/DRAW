@@ -49,8 +49,9 @@ func ComputeRelations(newEvidence, existingEvidence []model.Evidence) []model.Ev
 				}
 			} else {
 				// Paraphrase gate: when the differing Values are highly
-				// similar (same fact, different wording, per PHASE_J_SPEC.md §2.6
-				// Scenario E), suppress the CONTRADICTS edge entirely. This is a
+				// similar (same fact, different wording — a paraphrase
+				// suppressed by the acceptance gate), suppress the CONTRADICTS
+				// edge entirely. This is a
 				// pure abstention — no edge is emitted and no new relation Kind is
 				// introduced (no enum or migration change). Genuine contradictions
 				// (Scenario C) fall through with overlap < threshold and emit

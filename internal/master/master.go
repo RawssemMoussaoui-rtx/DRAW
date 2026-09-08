@@ -677,20 +677,21 @@ func (m *Master) reseedTask(orig model.Task, kind string) model.Task {
 	}
 	cost := m.cfg.CostModel[tt]
 	return model.Task{
-		ID:            model.NewTaskID(),
-		SessionID:     orig.SessionID,
-		Type:          tt,
-		State:         model.TaskStateReady,
-		Priority:      50,
-		SourceClass:   orig.SourceClass,
-		SourceTarget:  orig.SourceTarget,
-		URL:           orig.URL,
-		CrawlDepth:    orig.CrawlDepth + 1,
-		TaskDepth:     orig.TaskDepth + 1,
-		EstimatedCost: cost,
-		TaskKey:       fmt.Sprintf("%s:%s:%d", kind, orig.TaskKey, m.redisc[orig.ID]),
-		ParentTaskID:  &orig.ID,
-		CreatedAt:     time.Now().UTC(),
+		ID:              model.NewTaskID(),
+		SessionID:       orig.SessionID,
+		Type:            tt,
+		State:           model.TaskStateReady,
+		Priority:        50,
+		SourceClass:     orig.SourceClass,
+		SourceTarget:    orig.SourceTarget,
+		URL:             orig.URL,
+		CrawlDepth:      orig.CrawlDepth + 1,
+		TaskDepth:       orig.TaskDepth + 1,
+		EstimatedCost:   cost,
+		TaskKey:         fmt.Sprintf("%s:%s:%d", kind, orig.TaskKey, m.redisc[orig.ID]),
+		ParentTaskID:    &orig.ID,
+		CreatedByTaskID: &orig.ID,
+		CreatedAt:       time.Now().UTC(),
 	}
 }
 

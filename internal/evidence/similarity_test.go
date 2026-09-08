@@ -38,7 +38,9 @@ func anyKind(rels []model.EvidenceRelation, k model.EvidenceRelationKind) bool {
 // On UNPATCHED relations.go: same Claim + different Value (textual) -> CONTRADICTS
 // emitted. On PATCHED (with the similarity gate) -> no edge at all (abstained).
 // This test exercises PATCHED code; on unpatched code it FAILS because a
-// CONTRADICTS edge would be present. See PHASE_J_SPEC.md §2.6 Scenario E.
+// CONTRADICTS edge would be present. Scenario E: same-Claim items whose
+// differing Values are textual paraphrases (high n-gram overlap) are
+// suppressed by the acceptance gate.
 // ---------------------------------------------------------------------------
 func TestComputeRelations_ParaphraseSuppressed(t *testing.T) {
 	a := mkEvidence("evE1", "alpha.example", "claim:Capital", "Paris is the capital of France", 0.3)

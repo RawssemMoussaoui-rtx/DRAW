@@ -251,3 +251,59 @@ func TestExtract_TextNoEvidence(t *testing.T) {
 		t.Errorf("expected nil for text/plain, got %v", items)
 	}
 }
+
+func TestExtract_OriginURLSet(t *testing.T) {
+	tk, r := testTask(model.RetrievalStatusSuccess, []byte("<title>X</title>"), nil)
+	items := Extract(tk, r, nil)
+	if len(items) == 0 {
+		t.Fatal("expected items")
+	}
+	for i, it := range items {
+		if it.OriginURL == nil {
+			t.Fatalf("item %d: expected OriginURL set, got nil", i)
+		}
+		if *it.OriginURL != "https://example.com" {
+			t.Errorf("item %d: expected OriginURL=https://example.com, got %q", i, *it.OriginURL)
+		}
+	}
+}
+
+func TestExtract_ExtractionSeqOrdering(t *testing.T) {
+	tk, r := testTask(model.RetrievalStatusSuccess,
+		[]byte(`[{"revenue":1230000,"name":"Co"}]`), nil)
+	items := Extract(tk, r, nil)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	for i, it := range items {
+		if it.ExtractionSeq == nil {
+			t.Fatalf("item %d: expected ExtractionSeq set, got nil", i)
+		}
+		if *it.ExtractionSeq != i {
+			t.Errorf("item %d: expected ExtractionSeq=%d, got %d", i, i, *it.ExtractionSeq)
+		}
+	}
+}
+
+func TestExtract_ExtractionSeqResetsPerCall(t *testing.T) {
+	tk, r := testTask(model.RetrievalStatusSuccess,
+		[]byte(`[{"a":1},{"b":2}]`), nil)
+	items := Extract(tk, r, nil)
+	if len(items) == 0 {
+		t.Fatal("expected items")
+	}
+	if *items[0].ExtractionSeq != 0 {
+		t.Errorf("first call item 0: expected ExtractionSeq=0, got %d", *items[0].ExtractionSeq)
+	}
+	if *items[len(items)-1].ExtractionSeq != len(items)-1 {
+		t.Errorf("first call last item: expected ExtractionSeq=%d, got %d", len(items)-1, *items[len(items)-1].ExtractionSeq)
+	}
+
+	items2 := Extract(tk, r, nil)
+	if len(items2) == 0 {
+		t.Fatal("expected items on second call")
+	}
+	if *items2[0].ExtractionSeq != 0 {
+		t.Errorf("second call item 0: expected ExtractionSeq=0, got %d", *items2[0].ExtractionSeq)
+	}
+}

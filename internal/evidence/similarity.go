@@ -6,8 +6,10 @@ import "strings"
 // Stage 2 acceptance-gate protocol. Selected from the fixed grid {0.5, 0.65, 0.8}:
 // tau=0.8 is the strictest candidate that still suppresses the Scenario E
 // paraphrase pair (overlap >= tau -> no edge) while preserving the Scenario C
-// true-contradiction pair (overlap < tau -> CONTRADICTS emitted). See
-// PHASE_J_SPEC.md §2.6 (paraphrase) and §2.3 (contradiction).
+// true-contradiction pair (overlap < tau -> CONTRADICTS emitted). The gate
+// rule: high overlap between differing Values of same-Claim items is a
+// paraphrase (suppressed, no edge); lower overlap is a genuine contradiction
+// (CONTRADICTS emitted).
 //
 // This is a pure abstention gate: a high-similarity same-Claim/different-Value
 // pair emits no edge at all (not a new relation kind). It does NOT redefine

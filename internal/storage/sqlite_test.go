@@ -53,8 +53,8 @@ func TestApplyIdempotent(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if n != 3 {
-		t.Errorf("expected 3 applied migration rows, got %d", n)
+	if n != 4 {
+		t.Errorf("expected 4 applied migration rows, got %d", n)
 	}
 }
 
@@ -219,8 +219,8 @@ func TestMigration_AppliesSequentially(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if n != 3 {
-		t.Errorf("expected 3 migration rows (V1+V2+V3), got %d", n)
+	if n != 4 {
+		t.Errorf("expected 4 migration rows (V1+V2+V3+V4), got %d", n)
 	}
 }
 

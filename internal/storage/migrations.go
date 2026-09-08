@@ -137,6 +137,13 @@ CREATE INDEX IF NOT EXISTS idx_recovery_expires ON sessions_recovery(expires_at)
 CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id, id);
 `,
 	},
+	{
+		Version: 4,
+		Name:    "add_evidence_provenance",
+		Up: `ALTER TABLE evidence ADD COLUMN origin_url TEXT;
+ALTER TABLE evidence ADD COLUMN extraction_seq INTEGER;
+`,
+	},
 }
 
 var coreTables = []string{

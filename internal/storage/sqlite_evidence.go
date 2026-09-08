@@ -29,14 +29,16 @@ func (s *SQLiteEvidenceStore) Put(e model.Evidence) (model.EvidenceID, error) {
 	}
 	ctx := context.Background()
 	const q = `INSERT INTO evidence
-  (id, session_id, task_id, source_id, topic, claim, value, confidence, verification_state, collected_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  (id, session_id, task_id, source_id, topic, claim, value, confidence, verification_state, collected_at, origin_url, extraction_seq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   claim = excluded.claim,
   value = excluded.value,
   confidence = excluded.confidence,
   verification_state = excluded.verification_state,
-  collected_at = excluded.collected_at`
+  collected_at = excluded.collected_at,
+  origin_url = excluded.origin_url,
+  extraction_seq = excluded.extraction_seq`
 	if _, err := s.db.ExecContext(ctx, q,
 		string(id),
 		string(e.SessionID),
@@ -48,6 +50,8 @@ ON CONFLICT(id) DO UPDATE SET
 		e.Confidence,
 		string(e.Verification),
 		e.CollectedAt,
+		ptrString(e.OriginURL),
+		ptrInt(e.ExtractionSeq),
 	); err != nil {
 		return "", fmt.Errorf("evidence put: %w", err)
 	}
@@ -113,7 +117,7 @@ ON CONFLICT(from_id, to_id, kind) DO UPDATE SET strength = excluded.strength`
 
 func (s *SQLiteEvidenceStore) Query(f EvidenceFilter) []model.Evidence {
 	ctx := context.Background()
-	const cols = `SELECT id, session_id, task_id, source_id, topic, claim, value, confidence, verification_state, collected_at FROM evidence`
+	const cols = `SELECT id, session_id, task_id, source_id, topic, claim, value, confidence, verification_state, collected_at, origin_url, extraction_seq FROM evidence`
 	clauses := make([]string, 0, 3)
 	args := make([]interface{}, 0, 3)
 	if f.SessionID != "" {
@@ -146,11 +150,14 @@ func (s *SQLiteEvidenceStore) Query(f EvidenceFilter) []model.Evidence {
 		var id, sessionID, taskID, sourceID, verification string
 		var topic, claim, value sql.NullString
 		var confidence sql.NullFloat64
+		var originURL sql.NullString
+		var extractionSeq sql.NullInt64
 		var collectedAt time.Time
 		if err := rows.Scan(
 			&id, &sessionID, &taskID, &sourceID,
 			&topic, &claim, &value, &confidence,
 			&verification, &collectedAt,
+			&originURL, &extractionSeq,
 		); err != nil {
 			return nil
 		}
@@ -172,6 +179,14 @@ func (s *SQLiteEvidenceStore) Query(f EvidenceFilter) []model.Evidence {
 		}
 		e.Verification = model.VerificationState(verification)
 		e.CollectedAt = collectedAt
+		if originURL.Valid {
+			url := originURL.String
+			e.OriginURL = &url
+		}
+		if extractionSeq.Valid {
+			seq := int(extractionSeq.Int64)
+			e.ExtractionSeq = &seq
+		}
 		out = append(out, e)
 	}
 	return out
@@ -214,4 +229,18 @@ func nullString(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+func ptrString(s *string) interface{} {
+	if s == nil {
+		return nil
+	}
+	return *s
+}
+
+func ptrInt(i *int) interface{} {
+	if i == nil {
+		return nil
+	}
+	return *i
 }
