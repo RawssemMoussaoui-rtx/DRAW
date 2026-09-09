@@ -14,6 +14,7 @@ type Frontier interface {
 	FrontierSink
 	Next(n int) []URLCandidate
 	Has(domain, rawurl string) bool
+	ResetSession(sessionID model.SessionID) error
 	Score(c URLCandidate) float64
 }
 

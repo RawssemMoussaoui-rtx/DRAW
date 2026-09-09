@@ -20,6 +20,7 @@ type Orchestration interface {
 	Admit(time.Time) (model.Task, manager.Manager, manager.WorkerSlot, bool)
 	Release(manager.WorkerSlot, model.TaskID, bool)
 	Stats() SchedulerStats
+	ResetSession(model.SessionID)
 }
 
 // TaskCanceller is an optional interface for schedulers that support
@@ -158,6 +159,8 @@ func (m *Master) SubmitIntent(req model.IntentRequest) (model.SessionID, error) 
 		return "", err
 	}
 
+	m.orch.ResetSession(session.ID)
+
 	seedTasks := m.seedTasks(session, intent)
 
 	m.mu.Lock()
@@ -245,7 +248,9 @@ func (m *Master) Run(ctx context.Context) error {
 		m.mu.Unlock()
 		return errors.New("master: no session submitted; call SubmitIntent first")
 	}
+	sessionID := m.state.Session.ID
 	m.mu.Unlock()
+	defer m.orch.ResetSession(sessionID)
 
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
@@ -505,6 +510,10 @@ func (m *Master) Cancel() {
 	m.tasks = map[model.TaskID]model.Task{}
 	m.StopPending = false
 	m.cancelled = true
+	var sessionID model.SessionID
+	if m.state != nil && m.state.Session != nil {
+		sessionID = m.state.Session.ID
+	}
 	if m.state != nil && !m.state.Terminal {
 		m.state.SetTerminal("cancelled_stuck_workers")
 	}
@@ -520,6 +529,8 @@ func (m *Master) Cancel() {
 			tc.CancelTask(id)
 		}
 	}
+
+	m.orch.ResetSession(sessionID)
 }
 
 func (m *Master) admitOne(ctx context.Context) (model.Task, manager.Manager, manager.WorkerSlot, bool) {

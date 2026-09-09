@@ -78,6 +78,8 @@ func (f *fakeScheduler) Stats() SchedulerStats {
 	return s
 }
 
+func (f *fakeScheduler) ResetSession(model.SessionID) {}
+
 type fakeManager struct {
 	mu      sync.Mutex
 	calls   int

@@ -3,6 +3,7 @@ package frontier
 import (
 	"net/url"
 	"sort"
+	"strings"
 	"sync"
 
 	"draw/internal/config"
@@ -11,11 +12,12 @@ import (
 )
 
 type MemoryFrontier struct {
-	cfg config.SchedulerConfig
-	src storage.SourceRegistry
-	s   scorer
-	mu  sync.RWMutex
-	byKey map[string]*entry
+	cfg         config.SchedulerConfig
+	src         storage.SourceRegistry
+	s           scorer
+	mu          sync.RWMutex
+	byKey       map[string]*entry
+	sessionKeys map[model.SessionID][]string
 }
 
 type entry struct {
@@ -25,11 +27,16 @@ type entry struct {
 
 func NewMemoryFrontier(cfg config.SchedulerConfig, src storage.SourceRegistry) *MemoryFrontier {
 	return &MemoryFrontier{
-		cfg:   cfg,
-		src:   src,
-		s:    newScorer(cfg),
-		byKey: map[string]*entry{},
+		cfg:         cfg,
+		src:         src,
+		s:           newScorer(cfg),
+		byKey:       map[string]*entry{},
+		sessionKeys: map[model.SessionID][]string{},
 	}
+}
+
+func sessionKey(sessionID model.SessionID, canonicalURL string) string {
+	return string(sessionID) + ":" + canonicalURL
 }
 
 func (f *MemoryFrontier) Push(candidates []URLCandidate) error {
@@ -43,19 +50,25 @@ func (f *MemoryFrontier) Push(candidates []URLCandidate) error {
 		if !passesHardFilter(c, f.cfg, f.src) {
 			continue
 		}
-		key := canonicalURL(c)
-		if key == "" {
+		canonical := canonicalURL(c)
+		if canonical == "" {
 			continue
 		}
+		key := sessionKey(c.SessionID, canonical)
 		if _, exists := f.byKey[key]; exists {
 			continue
 		}
 		f.byKey[key] = &entry{c: c, score: f.s.score(c, f.src)}
+		f.sessionKeys[c.SessionID] = append(f.sessionKeys[c.SessionID], key)
 	}
 	return nil
 }
 
 func (f *MemoryFrontier) Next(n int) []URLCandidate {
+	// Next is session-agnostic by design: it returns candidates from ALL sessions.
+	// This relies on the architectural assumption that only one session runs
+	// actively at a time, so there is no risk of interleaving results across
+	// different sessions.
 	if n <= 0 {
 		return nil
 	}
@@ -91,6 +104,12 @@ func (f *MemoryFrontier) Next(n int) []URLCandidate {
 }
 
 func (f *MemoryFrontier) Has(domain, rawurl string) bool {
+	// Has is session-agnostic by design: it checks whether a URL exists in the
+	// frontier across ALL sessions. This relies on the architectural assumption
+	// that only one session runs actively at a time, so there are no
+	// cross-session collision concerns. Because byKey is keyed by composite
+	// session-scoped keys (sessionID:canonicalURL), this performs an O(N) scan
+	// extracting the canonical-URL suffix from each key.
 	if rawurl == "" {
 		return false
 	}
@@ -98,9 +117,19 @@ func (f *MemoryFrontier) Has(domain, rawurl string) bool {
 	if err != nil {
 		return false
 	}
+	target := CanonicalKey(u)
+	if target == "" {
+		return false
+	}
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	return f.byKey[CanonicalKey(u)] != nil
+	for key := range f.byKey {
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) == 2 && parts[1] == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *MemoryFrontier) Score(c URLCandidate) float64 {
@@ -113,6 +142,20 @@ func (f *MemoryFrontier) Len() int {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return len(f.byKey)
+}
+
+func (f *MemoryFrontier) ResetSession(sessionID model.SessionID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	keys, ok := f.sessionKeys[sessionID]
+	if !ok || len(keys) == 0 {
+		return nil
+	}
+	for _, key := range keys {
+		delete(f.byKey, key)
+	}
+	delete(f.sessionKeys, sessionID)
+	return nil
 }
 
 func (f *MemoryFrontier) less(a, b *entry) bool {
