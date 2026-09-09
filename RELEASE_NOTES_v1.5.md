@@ -74,7 +74,7 @@ From `internal/evidence/similarity.go:16`:
 const contradictionSimilarityThreshold = 0.8
 ```
 
-Selected from the fixed grid {0.5, 0.65, 0.8} per the Step 2 acceptance-gate protocol. τ = 0.8 is the **strictest** candidate that still suppresses the Scenario E paraphrase pair (overlap ≥ τ) while preserving the Scenario C true-contradiction pair (overlap < τ). It matches the n-gram-overlap threshold cited in PHASE_J_SPEC.md J1.3 (line 337: `NGramOverlap < τ_overlap = 0.8`), keeping the correction consistent with the broader framework substrate.
+Selected from the fixed grid {0.5, 0.65, 0.8} per the Step 2 acceptance-gate protocol. τ = 0.8 is the **strictest** candidate that still suppresses the Scenario E paraphrase pair (overlap ≥ τ) while preserving the Scenario C true-contradiction pair (overlap < τ). It matches the n-gram-overlap threshold defined in the acceptance-gate protocol (τ_overlap = 0.8), keeping the correction consistent with the broader framework substrate.
 
 `ValueSimilarity` is a pure standard-library function (n ∈ {1,2,3} token n-gram TF–Jaccard, lowercased + punctuation-stripped). No NLP / NER / entity extraction / LLM is involved — only the n-grams / term-frequency substrate explicitly permitted by the Phase-J hard constraint.
 
@@ -120,7 +120,7 @@ Inserted into the `else` branch of the `n.Value == e.Value` check. Functional li
 ```go
 } else {
     // Paraphrase gate: when the differing Values are highly
-    // similar (same fact, different wording, per PHASE_J_SPEC.md §2.6
+    // similar (same fact, different wording, per the acceptance-gate protocol §2.6
     // Scenario E), suppress the CONTRADICTS edge entirely. This is a
     // pure abstention — no edge is emitted and no new relation Kind is
     // introduced (no enum or migration change). Genuine contradictions

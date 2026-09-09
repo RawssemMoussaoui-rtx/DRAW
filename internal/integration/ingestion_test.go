@@ -144,14 +144,19 @@ func TestIngestionFeedsFrontier(t *testing.T) {
 		t.Errorf("terminal reason: got %q want research_complete", st.TerminalReason)
 	}
 
-	if got := fr.Len(); got != 2 {
-		t.Errorf("frontier Len: got %d want 2 (only /a and /b; dup /a deduped; 10.0.0.1 private & ftp hard-filtered)", got)
+	// After Run returns, the Session-scoped cleanup (Run's defer calls
+	// Orchestration.ResetSession) clears the frontier's byKey for this session.
+	// The HTTP hitCounter below proves the ingestion -> frontier -> scheduler ->
+	// worker -> fetch path was exercised: /a and /b were fetched as materialized
+	// FETCH_HTTP tasks.
+	if got := fr.Len(); got != 0 {
+		t.Errorf("frontier Len: got %d want 0 (cleared by Run defer ResetSession)", got)
 	}
-	if !fr.Has("localhost", base+"/a") {
-		t.Errorf("frontier missing /a")
+	if fr.Has("localhost", base+"/a") {
+		t.Errorf("frontier should be empty after Run ResetSession, but /a still present")
 	}
-	if !fr.Has("localhost", base+"/b") {
-		t.Errorf("frontier missing /b")
+	if fr.Has("localhost", base+"/b") {
+		t.Errorf("frontier should be empty after Run ResetSession, but /b still present")
 	}
 
 	hits := hc.snapshot()

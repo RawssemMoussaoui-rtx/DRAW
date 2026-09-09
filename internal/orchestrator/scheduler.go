@@ -40,6 +40,7 @@ type Scheduler struct {
 	pending      taskHeap
 	keyIndex     map[string]*taskItem
 	materialized map[string]bool
+	sessionKeys  map[model.SessionID][]string
 	active       map[model.TaskID]*activeTask
 	domainActive map[string]int
 	browserActive int
@@ -114,6 +115,7 @@ func NewScheduler(cfg config.SchedulerConfig, fr frontier.Frontier, rc *Resource
 		caps:         caps,
 		keyIndex:     map[string]*taskItem{},
 		materialized: map[string]bool{},
+		sessionKeys:  map[model.SessionID][]string{},
 		active:       map[model.TaskID]*activeTask{},
 		domainActive: map[string]int{},
 		executedByType: map[model.TaskType]int{},
@@ -144,6 +146,7 @@ func (s *Scheduler) Submit(t model.Task) error {
 	it := &taskItem{task: t}
 	heap.Push(&s.pending, it)
 	s.keyIndex[key] = it
+	s.sessionKeys[t.SessionID] = append(s.sessionKeys[t.SessionID], key)
 	return nil
 }
 
@@ -315,7 +318,7 @@ func (s *Scheduler) drainFrontier(caps Caps) {
 		if c.URL == nil {
 			continue
 		}
-		if s.materialized[frontier.CanonicalKey(c.URL)] {
+		if s.materialized[sessionTaskKey(c.SessionID, frontier.CanonicalKey(c.URL))] {
 			continue
 		}
 		t := materializeTask(c, s.cfg)
@@ -329,7 +332,10 @@ func (s *Scheduler) drainFrontier(caps Caps) {
 		it := &taskItem{task: t}
 		heap.Push(&s.pending, it)
 		s.keyIndex[key] = it
-		s.materialized[frontier.CanonicalKey(c.URL)] = true
+		s.sessionKeys[t.SessionID] = append(s.sessionKeys[t.SessionID], key)
+		mKey := sessionTaskKey(t.SessionID, frontier.CanonicalKey(c.URL))
+		s.materialized[mKey] = true
+		s.sessionKeys[t.SessionID] = append(s.sessionKeys[t.SessionID], mKey)
 	}
 }
 
