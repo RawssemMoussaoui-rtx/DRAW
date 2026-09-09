@@ -191,7 +191,7 @@ Confirmed via:
 | `EVALUATION_DESIGN.md` | Untracked | Phase-J evaluation doc |
 | `INTEGRATION_DESIGN.md` | Untracked | Phase-J integration doc |
 | `PHASE_J_RULINGS.md` | Untracked | Phase-J governance rulings |
-| `PHASE_J_SPEC.md` | Untracked | Phase-J specification |
+| `PHASE_J_SPEC.md` | Untracked | Phase-J specification (external; not part of this release) |
 | `data/draw.db` | Untracked | Pre-existing SQLite database (163,840 bytes); development artifact, unrelated to Experiment 0 |
 
 ---
@@ -222,7 +222,7 @@ Confirmed via:
 
 4. **EXPERIMENT_PROTOCOL.md is staged but unrelated:** `EXPERIMENT_PROTOCOL.md` is staged (`A` in `git status`) but is not listed in the release notes' changed-file table. Its content describes a *different* Phase-J experiment (J1 Independence Graph, §"Experiment 1 Scope Proposal"), not the paraphrase-gate correction. It is correctly classified here as a pre-existing Phase-J artifact, not an Experiment 0 change.
 
-5. **`ValueSimilarity` computes overlap over Value only, not Claim+Value:** PHASE_J_SPEC.md:308 defines `NGramOverlap` as "max n-gram TF Jaccard over (Claim,Value)". The Experiment 0 implementation computes overlap over Value only. This is correct for the gate's purpose because the gate is only reached when `n.Claim == e.Claim` (checked at relations.go:35), so Value-only overlap is equivalent to Claim+Value overlap for same-Claim pairs. However, it does not match the spec's literal definition of NGramOverlap. This is a minor semantic distinction, not a bug.
+5. **`ValueSimilarity` computes overlap over Value only, not Claim+Value:** The framework specification defines `NGramOverlap` as "max n-gram TF Jaccard over (Claim,Value)". The Experiment 0 implementation computes overlap over Value only. This is correct for the gate's purpose because the gate is only reached when `n.Claim == e.Claim` (checked at relations.go:35), so Value-only overlap is equivalent to Claim+Value overlap for same-Claim pairs. However, it does not match the spec's literal definition of NGramOverlap. This is a minor semantic distinction, not a bug.
 
 6. **`data/draw.db` is a pre-existing untracked binary:** A 163,840-byte SQLite database at `data/draw.db`. It is untracked and unrelated to Experiment 0. Its presence in the working tree is noted for completeness.
 
