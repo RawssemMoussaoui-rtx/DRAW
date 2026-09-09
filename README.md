@@ -29,7 +29,7 @@ advance for that too.
 
 Go might seem like an unconventional choice of language for a project like
 this, but I found it's genuinely the best fit for this kind of system — and I
-happened to already been learning it, so, well, that's how it happened (ha).
+happened to already be learning it, so, well, that's how it happened (ha).
 My actual specialty is Python, but Go is undoubtedly the right call for this
 project. So if development stops, you're welcome to keep building on this
 repository yourself.
@@ -93,7 +93,7 @@ summary of what was closed out. Future work moves to engine *capability* and
   access without deadlock. A context-handling bug that could orphan a
   session's master `Run` goroutine when the `POST /sessions` handler
   returned was fixed: the run derives its context from server lifetime
-  (`context.WithCancel(sm.srvCtx)`), so the session survives the HTTP request
+  (`context.WithCancel(sm.srvCtx)` at `internal/api/server.go`), so the session survives the HTTP request
   without leaking goroutines.
 
 - **Scoring saturation and quota fairness.** The tanh-saturation logic for
@@ -113,11 +113,7 @@ summary of what was closed out. Future work moves to engine *capability* and
   through the source registry and persisted alongside the evidence row. This
   makes every claim attributable to a concrete retrieval step for audit.
 
-- **Verification scope (precisely-scoped recompute).** Evidence re-verification
-  is scoped to only the affected topic and claim set rather than triggering a
-  full-session recompute. The `Counts()` reader (`internal/master/evidence.go`)
-  now resolves all three verification dimensions (DISPUTED, UNVERIFIED,
-  PARTIALLY_VERIFIED) so replan triggers fire precisely and minimally.
+- **Verification scope (precisely-scoped recompute).** Verification recompute is scoped to only {topics touched by new evidence} ∪ {topics whose evidence source quality changed}, tracked via an in-memory dirty-topic set and a lastQualityMap snapshot, batched at a single barrier per observeAndDecide cycle (no full-session recompute).
 
 - **Contradiction-similarity calibration.** The paraphrase/similarity gate
   (`internal/evidence/relations.go`, `internal/evidence/similarity.go`) uses
@@ -128,11 +124,7 @@ summary of what was closed out. Future work moves to engine *capability* and
   paraphrases (overlap ≥ τ) while still emitting `CONTRADICTS` for true
   disagreements (overlap < τ).
 
-- **Session-scoped URL de-duplication.** The frontier and scheduler are
-  isolated per session: each session owns its own in-memory frontier and
-  scheduler context, so concurrent sessions (where supported) do not share URL
-  state or interfere with each other's task admission. The single-active
-  session rule is enforced at the API orchestrator layer.
+- **Session-scoped URL de-duplication.** A shared, long-lived Frontier and Scheduler have their internal in-memory state rekeyed by a composite (SessionID, canonicalURL) key, with an explicit ResetSession() cleanup path invoked at session start (idempotent pre-cleanup) and at session end/cancellation (defer in Run).
 
 ### What's next
 
