@@ -155,6 +155,12 @@ func (fm *fakeMaster) State() master.ResearchState {
 
 func (fm *fakeMaster) Stop() error { return nil }
 
+func (fm *fakeMaster) Touch() error { return nil }
+
+func (fm *fakeMaster) TriggerExternalReplan(reasonCode, targetScope string) (bool, string, map[string]int) {
+	return false, "not_implemented", nil
+}
+
 type fakeSourceRegistry struct {
 	profiles map[string]model.SourceProfile
 }

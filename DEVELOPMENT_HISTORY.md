@@ -659,8 +659,9 @@ MODIFIED (Context-Fix only — the only source files touched):
   only — no master refactor.
 - Server-lifetime context for Run derivation (`sm.srvCtx`) rather than per-request
   `r.Context()`, so a session's Run outlives the HTTP handler.
-- SSE polls state every 250ms (default `NewSSEHandler` interval) instead of
-  push-driven events — no EventStore append-log needed in G.
+- SSE polls state every 250ms (default `NewSSEHandler` interval); EventStore/
+  SQLiteEventStore historical-event replay is wired in main.go (production wiring
+  was the only gap; replay + append already implemented in G).
 - Memory-only `sessionsManager` in the api layer; no persistent session storage.
 - Admin token read from ENV per request; ENV-only, fail-closed,
   `crypto/subtle.ConstantTimeCompare`; no credential storage.
@@ -746,7 +747,8 @@ All T4 results:
   workers/browser logic.
 - `go.mod`/`go.sum` unchanged; no new dependency (go mod verify: all modules
   verified).
-- No EventStore / events append-log (deferred to H).
+- EventStore/SQLiteEventStore + SSE replay wired in main.go (production wiring was the
+  only gap; append + replay already implemented in G).
 - No persistent session storage (memory-only sessionsManager in api layer; Master
   keeps Phase-F in-memory sessions).
 - No authorized credential storage (admin token read ENV-only per request).
@@ -755,7 +757,6 @@ All T4 results:
 
 - Persistent SessionStore + session recovery across restarts (replace in-memory
   `sessionsManager`).
-- EventStore / events append-log durability (SSE event-log deferred from G).
 - Multi-session runtime (Phase G enforces single active session per Cor.6; lift to
   multi-session).
 - Authorized-browser credential/session flow (browser auth + session lifecycle;

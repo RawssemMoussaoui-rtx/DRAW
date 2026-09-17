@@ -18,6 +18,11 @@ const (
 	PhaseFinalization           = "finalization"
 )
 
+// DefaultInactivityTimeout is the default 120-second inactivity threshold
+// applied to every newly created session. An agent-facing API call that
+// refreshes UpdatedAt (via Master.Touch) resets the clock.
+const DefaultInactivityTimeout = 120 * time.Second
+
 var PlanPhaseOrder = []string{
 	PhaseDiscovery,
 	PhasePrimaryRetrieval,
@@ -46,20 +51,23 @@ func (noopEvidenceReader) Counts(model.SessionID) EvidenceCounts { return Eviden
 func NoopEvidenceReader() EvidenceReader { return noopEvidenceReader{} }
 
 type ResearchState struct {
-	Session          *model.Session
-	Plan             *model.Plan
-	BudgetTotal      int
-	BudgetUsed       int
-	EvidenceCount    int
-	ReplanCount      int
-	MaxReplans       int
-	PhaseCompleted   map[string]bool
-	PhaseIndex       int
-	Terminal         bool
-	TerminalReason   string
-	Evidence         EvidenceCounts
-	UpdatedAt        time.Time
-	setTerminalCount int
+	Session           *model.Session
+	Plan              *model.Plan
+	BudgetTotal       int
+	BudgetUsed        int
+	EvidenceCount     int
+	ReplanCount       int
+	MaxReplans        int
+	AgentReplanCount  int
+	AgentMaxReplans   int
+	PhaseCompleted    map[string]bool
+	PhaseIndex        int
+	Terminal          bool
+	TerminalReason    string
+	Evidence          EvidenceCounts
+	UpdatedAt         time.Time
+	InactivityTimeout time.Duration
+	setTerminalCount  int
 }
 
 func NewResearchState(session *model.Session, plan *model.Plan, cfg config.SchedulerConfig) *ResearchState {
@@ -74,31 +82,41 @@ func NewResearchState(session *model.Session, plan *model.Plan, cfg config.Sched
 	if maxReplans <= 0 {
 		maxReplans = 3
 	}
+	agentMaxReplans := 1
+	if cap := maxReplans / 2; cap < agentMaxReplans {
+		agentMaxReplans = cap
+	}
 	return &ResearchState{
-		Session:        session,
-		Plan:           plan,
-		BudgetTotal:    total,
-		MaxReplans:     maxReplans,
-		PhaseCompleted: make(map[string]bool),
+		Session:           session,
+		Plan:              plan,
+		BudgetTotal:       total,
+		MaxReplans:        maxReplans,
+		AgentMaxReplans:   agentMaxReplans,
+		PhaseCompleted:    make(map[string]bool),
+		UpdatedAt:         time.Now().UTC(),
+		InactivityTimeout: DefaultInactivityTimeout,
 	}
 }
 
 func (s *ResearchState) Clone() ResearchState {
 	cp := ResearchState{
-		Session:          s.Session,
-		Plan:             s.Plan,
-		BudgetTotal:      s.BudgetTotal,
-		BudgetUsed:       s.BudgetUsed,
-		EvidenceCount:    s.EvidenceCount,
-		ReplanCount:      s.ReplanCount,
-		MaxReplans:       s.MaxReplans,
-		PhaseCompleted:   make(map[string]bool, len(s.PhaseCompleted)),
-		PhaseIndex:       s.PhaseIndex,
-		Terminal:         s.Terminal,
-		TerminalReason:   s.TerminalReason,
-		Evidence:         s.Evidence,
-		UpdatedAt:        s.UpdatedAt,
-		setTerminalCount: s.setTerminalCount,
+		Session:           s.Session,
+		Plan:              s.Plan,
+		BudgetTotal:       s.BudgetTotal,
+		BudgetUsed:        s.BudgetUsed,
+		EvidenceCount:     s.EvidenceCount,
+		ReplanCount:       s.ReplanCount,
+		MaxReplans:        s.MaxReplans,
+		AgentReplanCount:  s.AgentReplanCount,
+		AgentMaxReplans:   s.AgentMaxReplans,
+		PhaseCompleted:    make(map[string]bool, len(s.PhaseCompleted)),
+		PhaseIndex:        s.PhaseIndex,
+		Terminal:          s.Terminal,
+		TerminalReason:    s.TerminalReason,
+		Evidence:          s.Evidence,
+		UpdatedAt:         s.UpdatedAt,
+		InactivityTimeout: s.InactivityTimeout,
+		setTerminalCount:  s.setTerminalCount,
 	}
 	for k, v := range s.PhaseCompleted {
 		cp.PhaseCompleted[k] = v

@@ -80,13 +80,20 @@ type Master struct {
 	redisc         map[model.TaskID]int
 	dropped        map[model.TaskID]bool
 	lastQualityMap map[model.SourceID]float64
-	stop           chan struct{}
-	runErr         error
-	StopPending    bool
-	cancelled      bool
-	draining       bool
-	drainTimeout   time.Duration
-	cancelFn       context.CancelFunc
+	stop         chan struct{}
+	runErr       error
+	StopPending  bool
+	cancelled    bool
+	draining     bool
+	drainTimeout time.Duration
+	cancelFn     context.CancelFunc
+
+	replanCh                   chan externalReplanRequest
+	proposalHashes             map[string]bool
+	circuitBreakerTripped      bool
+	circuitBreakerConsecutiveAccepted int
+	lastAcceptedReplanAt       time.Time
+	lastAcceptedReplanQuality  float64
 }
 
 type MasterOption func(*Master)
@@ -113,13 +120,15 @@ func NewMaster(cfg config.SchedulerConfig, orch Orchestration, opts ...MasterOpt
 		planner:        NewPlanMaker(cfg),
 		decider:        NewDecider(cfg),
 		ingest:         noopIngestionFactory(),
-		stop:           make(chan struct{}),
-		tasks:          map[model.TaskID]model.Task{},
-		pending:        map[model.TaskID]bool{},
-		redisc:         map[model.TaskID]int{},
-		dropped:        map[model.TaskID]bool{},
-		lastQualityMap: map[model.SourceID]float64{},
-		drainTimeout:   5 * time.Second,
+		stop:                    make(chan struct{}),
+		tasks:                   map[model.TaskID]model.Task{},
+		pending:                 map[model.TaskID]bool{},
+		redisc:                  map[model.TaskID]int{},
+		dropped:                 map[model.TaskID]bool{},
+		lastQualityMap:          map[model.SourceID]float64{},
+		drainTimeout:            5 * time.Second,
+		replanCh:                make(chan externalReplanRequest, 1),
+		proposalHashes:          make(map[string]bool),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -356,6 +365,9 @@ func (m *Master) Run(ctx context.Context) error {
 				return nil
 			}
 		case <-ticker.C:
+			m.checkInactivity()
+		case req := <-m.replanCh:
+			m.handleExternalReplan(req)
 		}
 	}
 }
@@ -807,6 +819,40 @@ func (m *Master) terminal() bool {
 	return m.state != nil && m.state.Terminal
 }
 
+// checkInactivity is invoked on every 20 ms tick from the Run goroutine.
+// When the active (non-terminal) session has been idle longer than
+// InactivityTimeout it is marked StopPending + terminal ("inactivity_timeout")
+// and the existing Cancel → ResetSession cleanup path is invoked so in-flight
+// tasks are purged and the orchestrator frontier is reset.
+func (m *Master) checkInactivity() {
+	m.mu.Lock()
+	state := m.state
+	if state == nil || state.Terminal || m.StopPending {
+		m.mu.Unlock()
+		return
+	}
+	if time.Since(state.UpdatedAt) <= state.InactivityTimeout {
+		m.mu.Unlock()
+		return
+	}
+	session := state.Session
+	state.SetTerminal("inactivity_timeout")
+	m.StopPending = true
+	m.mu.Unlock()
+
+	if session != nil {
+		m.emitEvent(Event{
+			SessionID: session.ID,
+			Kind:      "inactivity_timeout",
+			Level:     "WARN",
+			Message:   fmt.Sprintf("session inactive for >%v; terminating via Cancel → ResetSession", state.InactivityTimeout),
+			TS:        time.Now().UTC(),
+		})
+	}
+
+	m.Cancel()
+}
+
 func (m *Master) drained() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -827,6 +873,24 @@ func (m *Master) State() ResearchState {
 		return ResearchState{}
 	}
 	return m.state.Clone()
+}
+
+// Touch refreshes the session's UpdatedAt timestamp, resetting the
+// inactivity clock. This must be called by every agent-facing API call that
+// touches a session so that active sessions are not erroneously terminated
+// by the inactivity timeout. Returns an error if there is no active session
+// or the session is already terminal.
+func (m *Master) Touch() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state == nil {
+		return errors.New("master: no active session")
+	}
+	if m.state.Terminal {
+		return errors.New("master: session is terminal")
+	}
+	m.state.UpdatedAt = time.Now().UTC()
+	return nil
 }
 
 func (m *Master) Stop() error {

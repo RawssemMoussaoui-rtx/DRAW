@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 
+	"draw/internal/api/v2agent"
 	"draw/internal/model"
 )
 
@@ -15,6 +16,7 @@ type apiServer struct {
 	sm          *sessionsManager
 	sse         *SSEHandler
 	buildResult func() model.ResultEnvelope
+	v2          *v2agent.V2AgentHandler
 }
 
 // NewServer builds the API server from Deps. ctx is the server-lifetime
@@ -28,7 +30,16 @@ func NewServer(deps *Deps, ctx context.Context) *apiServer {
 		return deps.ReportBuilder.Build(deps.Master.State())
 	}
 	sse := NewSSEHandler(deps.Master, buildResult)
-	return &apiServer{deps: deps, sm: sm, sse: sse, buildResult: buildResult}
+	v2 := &v2agent.V2AgentHandler{
+		Master:         deps.Master,
+		Sessions:       sm,
+		EvidenceStore:  deps.EvidenceStore,
+		SourceRegistry: deps.SourceRegistry,
+		MakeSSEHandler: func(sid model.SessionID) http.HandlerFunc {
+			return NewEventSDEHandler(deps.Master, deps.EventStore, buildResult, sid).WithAgentEvents().Handler()
+		},
+	}
+	return &apiServer{deps: deps, sm: sm, sse: sse, buildResult: buildResult, v2: v2}
 }
 
 // Serve mounts routes and blocks on ListenAndServe until ctx is cancelled.

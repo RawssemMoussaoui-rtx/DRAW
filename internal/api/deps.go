@@ -17,6 +17,8 @@ type MasterAPI interface {
 	Run(context.Context) error
 	State() master.ResearchState
 	Stop() error
+	Touch() error
+	TriggerExternalReplan(reasonCode, targetScope string) (bool, string, map[string]int)
 }
 
 // Deps wires the API server to the engine seams.

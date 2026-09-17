@@ -3,7 +3,7 @@
 Reproducer: internal/evalharness TestBaseline (P13: deterministic, no time.Now).
 
 Timestamp (UTC): 2026-08-23T16:06:51Z
-Git commit: a4f93bd67dc27f522246abb386e1b253e52b187d
+Git commit: 0323b0e550283bf0e6fe6c0f1e8a23478f9eff2b
 
 ## Scenario A
 
@@ -70,33 +70,33 @@ Per-scenario measurements taken around `RunV1OnScenario` (the single scenario en
 Time and memory are inherently non-deterministic and are expected to differ between runs; the M1-M7 section above is deterministic (no time.Now) and should be byte-identical across runs. The DB query count is structural and is likewise stable across runs.
 
 ### Scenario A
-- Elapsed: 2.629 ms
-- Allocated (TotalAlloc delta): 36544 bytes
-- Live heap (Alloc): 418480 bytes
+- Elapsed: 5.386 ms
+- Allocated (TotalAlloc delta): 37472 bytes
+- Live heap (Alloc): 420032 bytes
 - DB queries: 27
 
 ### Scenario B
-- Elapsed: 1.046 ms
-- Allocated (TotalAlloc delta): 21648 bytes
-- Live heap (Alloc): 434216 bytes
+- Elapsed: 1.057 ms
+- Allocated (TotalAlloc delta): 22600 bytes
+- Live heap (Alloc): 431912 bytes
 - DB queries: 13
 
 ### Scenario C
-- Elapsed: 1.032 ms
-- Allocated (TotalAlloc delta): 22368 bytes
-- Live heap (Alloc): 441752 bytes
+- Elapsed: 1.963 ms
+- Allocated (TotalAlloc delta): 23184 bytes
+- Live heap (Alloc): 439664 bytes
 - DB queries: 13
 
 ### Scenario D
-- Elapsed: 7.589 ms
-- Allocated (TotalAlloc delta): 180344 bytes
-- Live heap (Alloc): 615016 bytes
+- Elapsed: 8.516 ms
+- Allocated (TotalAlloc delta): 187112 bytes
+- Live heap (Alloc): 621632 bytes
 - DB queries: 135
 
 ### Scenario E
-- Elapsed: 0s
-- Allocated (TotalAlloc delta): 22976 bytes
-- Live heap (Alloc): 468344 bytes
+- Elapsed: 1.058 ms
+- Allocated (TotalAlloc delta): 23680 bytes
+- Live heap (Alloc): 475992 bytes
 - DB queries: 11
 
 ## Performance measurement methodology

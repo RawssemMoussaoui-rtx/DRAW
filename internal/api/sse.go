@@ -34,6 +34,15 @@ type ProgressEvent struct {
 	BudgetTotal    int     `json:"budget_total"`
 }
 
+// AgentProgressEvent extends ProgressEvent with agent-specific fields emitted
+// only on the v2 agent SSE endpoint (/api/v2/agent/sessions/{id}/events).
+type AgentProgressEvent struct {
+	ProgressEvent
+	AgentReplansUsed         int     `json:"agent_replans_used"`
+	AgentReplansRemaining    int     `json:"agent_replans_remaining"`
+	SecondsSinceLastActivity float64 `json:"seconds_since_last_activity"`
+}
+
 // SSEHandler streams research progress over Server-Sent Events.
 type SSEHandler struct {
 	sp          StateProvider
@@ -41,6 +50,17 @@ type SSEHandler struct {
 	es          storage.EventStore
 	sid         model.SessionID
 	interval    time.Duration
+	agentEvents bool
+}
+
+// WithAgentEvents returns a copy of the handler configured to emit
+// AgentProgressEvent (including agent replan budget and inactivity timing)
+// instead of the base ProgressEvent. This is used by the v2 agent SSE endpoint
+// while the v1/admin endpoints continue to emit the plain ProgressEvent.
+func (h *SSEHandler) WithAgentEvents() *SSEHandler {
+	clone := *h
+	clone.agentEvents = true
+	return &clone
 }
 
 // NewSSEHandler creates an SSE handler that polls the StateProvider every
@@ -167,14 +187,24 @@ func (h *SSEHandler) serveSSE(w http.ResponseWriter, r *http.Request, replay []s
 		if len(master.PlanPhaseOrder) > 0 {
 			completeness = float64(completedCount) / float64(len(master.PlanPhaseOrder))
 		}
-		writeSSE(w, flusher, "progress", ProgressEvent{
+		base := ProgressEvent{
 			Progress:       completeness,
 			Phase:          phaseName,
 			Evidence:       rs.EvidenceCount,
 			Contradictions: rs.Evidence.Contradictions,
 			BudgetUsed:     rs.BudgetUsed,
 			BudgetTotal:    rs.BudgetTotal,
-		})
+		}
+		if h.agentEvents {
+			writeSSE(w, flusher, "progress", AgentProgressEvent{
+				ProgressEvent:            base,
+				AgentReplansUsed:         rs.AgentReplanCount,
+				AgentReplansRemaining:    rs.AgentMaxReplans - rs.AgentReplanCount,
+				SecondsSinceLastActivity: float64(time.Since(rs.UpdatedAt).Seconds()),
+			})
+		} else {
+			writeSSE(w, flusher, "progress", base)
+		}
 
 		if rs.Terminal {
 			if h.buildResult == nil {

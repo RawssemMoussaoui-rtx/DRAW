@@ -2,19 +2,26 @@ package model
 
 import "time"
 
+type ExclusionReason string
+
+const (
+	ExclusionReasonNonConsensusValue ExclusionReason = "NON_CONSENSUS_VALUE"
+)
+
 type Evidence struct {
-	ID            EvidenceID
-	SessionID     SessionID
-	TaskID        TaskID
-	OriginURL     *string
-	ExtractionSeq *int
-	SourceID      SourceID
-	Topic         string
-	Claim         string
-	Value         string
-	Confidence    float64
-	Verification  VerificationState
-	CollectedAt   time.Time
+	ID              EvidenceID
+	SessionID       SessionID
+	TaskID          TaskID
+	OriginURL       *string
+	ExtractionSeq   *int
+	SourceID        SourceID
+	Topic           string
+	Claim           string
+	Value           string
+	Confidence      float64
+	Verification    VerificationState
+	CollectedAt     time.Time
+	ExclusionReason *ExclusionReason `json:"exclusion_reason"`
 }
 
 type EvidenceRelation struct {

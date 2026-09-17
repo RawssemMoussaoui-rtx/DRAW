@@ -171,6 +171,7 @@ func main() {
 		Master:         m,
 		EvidenceStore:  es,
 		SourceRegistry: src,
+		EventStore:     sqliteEventStore,
 		ReportBuilder:  result.NewReportBuilder(es, src),
 		Auth:           auth.LoadConfig(),
 	}
