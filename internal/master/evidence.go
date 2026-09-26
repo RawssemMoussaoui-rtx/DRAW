@@ -11,7 +11,7 @@ import (
 func WithEvidenceStore(es storage.EvidenceStore) MasterOption {
 	return func(m *Master) {
 		m.es = es
-		m.evidence = &storeEvidenceReader{es: es}
+		m.evidence = &storeEvidenceReader{es: es, committedCounts: EvidenceCounts{}}
 	}
 }
 
@@ -20,10 +20,15 @@ func WithSourceRegistry(reg storage.SourceRegistry) MasterOption {
 }
 
 type storeEvidenceReader struct {
-	es storage.EvidenceStore
+	es              storage.EvidenceStore
+	committedCounts EvidenceCounts
 }
 
 func (r *storeEvidenceReader) Counts(sid model.SessionID) EvidenceCounts {
+	return r.liveCounts(sid)
+}
+
+func (r *storeEvidenceReader) liveCounts(sid model.SessionID) EvidenceCounts {
 	c := EvidenceCounts{}
 	queries := []model.VerificationState{
 		model.VerificationDisputed,
@@ -45,6 +50,10 @@ func (r *storeEvidenceReader) Counts(sid model.SessionID) EvidenceCounts {
 		}
 	}
 	return c
+}
+
+func (r *storeEvidenceReader) refreshCommittedCounts(sid model.SessionID) {
+	r.committedCounts = r.liveCounts(sid)
 }
 
 func (m *Master) extractAndStoreEvidence(ctx context.Context, t model.Task, r *model.TaskResult) {

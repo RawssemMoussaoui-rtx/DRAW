@@ -259,6 +259,9 @@ func (m *Master) Run(ctx context.Context) error {
 	}
 	sessionID := m.state.Session.ID
 	m.mu.Unlock()
+	if ser, ok := m.evidence.(*storeEvidenceReader); ok {
+		ser.refreshCommittedCounts(sessionID)
+	}
 	defer m.orch.ResetSession(sessionID)
 
 	ticker := time.NewTicker(20 * time.Millisecond)
@@ -325,6 +328,9 @@ func (m *Master) Run(ctx context.Context) error {
 		// buffered here; that result may trigger a replan, so observe+decide
 		// it before declaring completion.
 		if m.drained() {
+			if ser, ok := m.evidence.(*storeEvidenceReader); ok {
+				ser.refreshCommittedCounts(sessionID)
+			}
 		flushBuffer:
 			for {
 				select {
@@ -338,6 +344,9 @@ func (m *Master) Run(ctx context.Context) error {
 				}
 			}
 			if m.drained() {
+				if ser, ok := m.evidence.(*storeEvidenceReader); ok {
+					ser.refreshCommittedCounts(sessionID)
+				}
 				m.mu.Lock()
 				if m.state != nil && !m.state.Terminal {
 					m.state.SetTerminal("research_complete")
@@ -810,7 +819,17 @@ func (m *Master) updateProgress(t model.Task, r model.TaskResult) {
 	if len(r.Evidence) > 0 {
 		m.state.AddEvidence(len(r.Evidence))
 	}
-	m.state.RefreshEvidenceCounts(m.evidence)
+	if ser, ok := m.evidence.(*storeEvidenceReader); ok && m.state.Session != nil {
+		live := ser.liveCounts(m.state.Session.ID)
+		m.state.Evidence = EvidenceCounts{
+			MissingPrimary: ser.committedCounts.MissingPrimary,
+			Contradictions: live.Contradictions,
+			StaleSources:   live.StaleSources,
+		}
+		m.state.UpdatedAt = time.Now().UTC()
+	} else {
+		m.state.RefreshEvidenceCounts(m.evidence)
+	}
 }
 
 func (m *Master) terminal() bool {
