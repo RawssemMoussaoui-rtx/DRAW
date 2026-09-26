@@ -1221,28 +1221,40 @@ func p9CountEvidenceBySource(t *testing.T, es *storage.SQLiteEvidenceStore, sid 
 }
 
 // TestP9_Experiment5_PriorityStarvation tests whether the Contradiction trigger,
-// which has highest priority in replanTriggerIfAny (decision.go:224-231), can
+// which has highest priority in replanTriggerIfAny (decision.go:226-262), can
 // monopolize all 3 replan opportunities (MaxReplans=3, an overall cap), leaving
 // MissingPrimary and StaleSource starved — never firing even though both have
 // sufficient evidence (UNVERIFIED >= MMissingPrimary=2, PARTIALLY_VERIFIED >=
 // SStaleSources=2) throughout the entire session.
 //
+// With the last-slot reserve (decision.go:246-252), Contradiction yields the
+// final replan slot (remaining == 1) to a non-Contradiction trigger when one is
+// eligible. So Contradiction fires on non-last slots only; MissingPrimary or
+// StaleSource fires on the last slot. This test verifies both behaviors coexist:
+//   - Contradiction wins on non-last slots (Verify + Reconcile tasks issued)
+//   - A non-Contradiction trigger fires on the last slot (Discover/FetchHTTP issued)
+//
 // Scenario:
 //   - 3 DISPUTED evidence items (Contradictions = 3 >= KContradictions=2)
 //   - 3 UNVERIFIED evidence items (MissingPrimary = 3 >= MMissingPrimary=2)
 //   - 3 PARTIALLY_VERIFIED evidence items (StaleSources = 3 >= SStaleSources=2)
-//   - p9Experiment5Worker dynamically injects NEW contradictions via distinct
+//   - p9Experiment5Worker dynamically re-injects contradictions via distinct
 //     revenue values during each replan-issued Verify task, ensuring
 //     Contradictions >= 2 persists at every replan opportunity
-//   - The worker does NOT resolve the UNVERIFIED/PARTIALLY_VERIFIED evidence
-//     (different claim paths → no cross-relations → verification state unchanged)
+//   - The worker does NOT resolve the pre-planted UNVERIFIED/PARTIALLY_VERIFIED
+//     evidence (different claim paths → no cross-relations → verification state unchanged)
 //
-// Expected outcome (FULL STARRVATION):
-//   - Contradiction fires at all 3 replan opportunities
-//   - MissingPrimary and StaleSource NEVER fire (shadowed by Contradiction priority)
-//   - Only Verify + Reconcile tasks issued (plus 1 seed Discover)
+// Expected outcome (LAST-SLOT RESERVE):
+//   - Contradiction fires on non-last slots (remaining > 1), winning priority
+//   - On the LAST replan slot (remaining == 1), MissingPrimary fires (eligible,
+//     takes priority among non-Contradiction triggers) instead of Contradiction
+//   - Verify + Reconcile tasks from non-last-slot Contradiction replans PLUS
+//     Discover tasks from the last-slot MissingPrimary replan (plus 1 seed Discover)
 //   - Pre-planted UNVERIFIED and PARTIALLY_VERIFIED evidence remains UNRESOLVED
-//   - Terminal state: research_complete (not budget_exhausted)
+//     (worker uses different claim paths → no cross-relations → state unchanged)
+//   - Terminal state: research_complete (Contradictions persist >= K → DecisionStop
+//     overrides terminal reason to research_complete per master.go:700-702)
+//
 func TestP9_Experiment5_PriorityStarvation(t *testing.T) {
 	w := newP9Experiment5Worker()
 	bmgr := &fakeBrowserManager{}
@@ -1277,13 +1289,36 @@ func TestP9_Experiment5_PriorityStarvation(t *testing.T) {
 	typeCounts := p9CountTaskTypes(calls)
 	injections := w.injectionCount()
 
+	// lastSlotReservedFired tracks whether the last-slot reserve behavior in
+	// replanTriggerIfAny (decision.go:246-252) was observed. When remaining == 1
+	// (the last replan opportunity before MaxReplans is exhausted), a
+	// non-Contradiction trigger (MissingPrimary via Discover tasks, or
+	// StaleSource via FetchHTTP tasks) fires instead of Contradiction.
+	//
+	// Detection uses two complementary signals:
+	//  1. Direct:  non-Contradiction tasks executed (Discover > 1 or FetchHTTP > 0).
+	//  2. Indirect: a Reconcile deficit — each Contradiction replan produces
+	//     exactly 1 Reconcile (planning.go:61) and the worker logs every call
+	//     (including failures). If Reconcile count < ReplanCount, at least one
+	//     replan was non-Contradiction (the last-slot reserve).
+	//
+	// The indirect signal is needed because the last-slot reserve's Discover
+	// tasks (priority 60) may not be dispatched before DecisionStop halts the
+	// session, leaving them un-executed despite the trigger having fired.
+	lastSlotReservedFired := typeCounts[model.TaskTypeDiscover] > 1 || typeCounts[model.TaskTypeFetchHTTP] > 0
+	if !lastSlotReservedFired {
+		lastSlotReservedFired = typeCounts[model.TaskTypeReconcile] < st.ReplanCount
+	}
+
 	t.Logf("=== Experiment 5: Priority Starvation Analysis ===")
 	t.Logf("Threshold constants: KContradictions=2, MMissingPrimary=2, SStaleSources=2, MaxReplans=3")
-	t.Logf("Priority order (decision.go:218-233): Contradiction > MissingPrimary > StaleSource")
+	t.Logf("Priority (decision.go:226-262): Contradiction > MissingPrimary > StaleSource on non-last slots;")
+	t.Logf("  last-slot reserve (decision.go:246-252): non-Contradiction fires when remaining==1")
 	t.Logf("Pre-populated evidence: 3 DISPUTED + 3 UNVERIFIED + 3 PARTIALLY_VERIFIED")
 	t.Logf("Evidence counts at termination: Contradictions=%d MissingPrimary=%d StaleSources=%d",
 		st.Evidence.Contradictions, st.Evidence.MissingPrimary, st.Evidence.StaleSources)
 	t.Logf("ReplanCount=%d (MaxReplans=%d)", st.ReplanCount, st.MaxReplans)
+	t.Logf("lastSlotReservedFired=%v (non-Contradiction trigger fired on last slot, remaining==1)", lastSlotReservedFired)
 	t.Logf("Terminal=%v TerminalReason=%q", st.Terminal, st.TerminalReason)
 	t.Logf("EvidenceCount (total rows in store)=%d", st.EvidenceCount)
 	t.Logf("Contradiction injections by worker: %d", injections)
@@ -1308,37 +1343,42 @@ func TestP9_Experiment5_PriorityStarvation(t *testing.T) {
 		t.Errorf("ReplanCount=%d, want >=1 (Contradiction trigger should fire)", st.ReplanCount)
 	}
 
-	// --- STARVATION CHECK 1: Contradiction fired at ALL replan opportunities ---
-	// Only Verify + Reconcile tasks should be issued (from Contradiction replan
-	// at planning.go:55-61), plus the 1 seed Discover.
-	// If MissingPrimary fired, it would issue Discover tasks (planning.go:62-66).
-	// If StaleSource fired, it would issue FetchHTTP tasks (planning.go:67-71).
-	if typeCounts[model.TaskTypeDiscover] > 1 {
-		t.Errorf("STARVATION BROKEN: Discover tasks=%d (want <=1). "+
-			"MissingPrimary trigger fired at least once — Contradiction did not monopolize all replan opportunities",
-			typeCounts[model.TaskTypeDiscover])
-	}
-	if typeCounts[model.TaskTypeFetchHTTP] > 0 {
-		t.Errorf("STARVATION BROKEN: FetchHTTP tasks=%d (want 0). "+
-			"StaleSource trigger fired at least once — Contradiction did not monopolize all replan opportunities",
-			typeCounts[model.TaskTypeFetchHTTP])
+	// --- LAST-SLOT RESERVE CHECK 1: non-Contradiction trigger fires on the last slot ---
+	// With last-slot reserve (decision.go:246-252): when remaining == 1, a
+	// non-Contradiction trigger (MissingPrimary or StaleSource) fires instead of
+	// Contradiction IF it is eligible. Here MissingPrimary is eligible
+	// (MissingPrimary=3 >= MMissingPrimary=2) and takes priority among
+	// non-Contradiction triggers, so it fires on the last replan slot →
+	// Discover tasks > 1 (seed + replan-issued Discovers).
+	if !lastSlotReservedFired {
+		t.Errorf("LAST-SLOT RESERVE NOT OBSERVED: Discover tasks=%d (want >1) "+
+			"or FetchHTTP tasks=%d (want >0); a non-Contradiction trigger should "+
+			"have fired on the last replan slot (remaining==1)",
+			typeCounts[model.TaskTypeDiscover], typeCounts[model.TaskTypeFetchHTTP])
 	}
 
-	// Confirm Contradiction replan path was exercised
+	// --- NON-LAST-SLOT CHECK: Contradiction still wins on non-last slots ---
+	// Contradiction must win on slots where remaining > 1. With MaxReplans=3,
+	// the last slot is remaining==1; all earlier slots (remaining=3,2) let
+	// Contradiction win when eligible. Verify + Reconcile tasks confirm
+	// Contradiction fired on at least one non-last slot.
 	if typeCounts[model.TaskTypeVerify] < 1 {
-		t.Errorf("Verify tasks=%d, want >=1 (Contradiction replan produces Verify at planning.go:55-61)",
+		t.Errorf("Verify tasks=%d, want >=1 (Contradiction replan produces Verify at planning.go:55-61 on non-last slots)",
 			typeCounts[model.TaskTypeVerify])
 	}
 	if typeCounts[model.TaskTypeReconcile] < 1 {
-		t.Errorf("Reconcile tasks=%d, want >=1 (Contradiction replan produces Reconcile at planning.go:61)",
+		t.Errorf("Reconcile tasks=%d, want >=1 (Contradiction replan produces Reconcile at planning.go:61 on non-last slots)",
 			typeCounts[model.TaskTypeReconcile])
 	}
 
-	// --- STARVATION CHECK 2: Contradictions persist at every replan opportunity ---
-	// The pre-planted DISPUTED evidence (3 items) ensures Contradictions >= 3 >= 2
-	// at the first opportunity. The worker's dynamic injection grows this count.
+	// --- CHECK 2: Contradictions persist (eligible on non-last slots and at DecisionStop) ---
+	// The pre-planted DISPUTED evidence (3 items) ensures Contradictions >= 3 >= 2.
+	// The worker's dynamic injection (distinct revenue values on every Verify/Discover
+	// task) grows this count. Contradictions >= KContradictions=2 keeps Contradiction
+	// eligible on non-last slots and makes DecisionStop override the terminal reason
+	// to "research_complete" (master.go:700-702).
 	if st.Evidence.Contradictions < 2 {
-		t.Errorf("Contradictions=%d, want >=2 (must persist at every replan opportunity for starvation)",
+		t.Errorf("Contradictions=%d, want >=2 (must persist to keep Contradiction eligible on non-last slots)",
 			st.Evidence.Contradictions)
 	}
 	// Dynamic injection proof: worker added contradictions beyond the 3
@@ -1356,16 +1396,23 @@ func TestP9_Experiment5_PriorityStarvation(t *testing.T) {
 		t.Errorf("worker contradiction injections=%d, want >0 (worker must inject during replan tasks)", injections)
 	}
 
-	// --- STARVATION CHECK 3: Pre-planted UNVERIFIED evidence persists (unprocessed) ---
-	// At termination, MissingPrimary must still be >= KMissingPrimary(2) because
-	// the UNVERIFIED evidence was never processed — no Discover tasks beyond the
-	// seed were issued (MissingPrimary trigger was shadowed).
+	// --- CHECK 3: Pre-planted UNVERIFIED evidence persists (unprocessed) ---
+	// MissingPrimary fired on the last slot (producing Discover tasks), but the
+	// pre-planted UNVERIFIED evidence persists because p9Experiment5Worker uses
+	// different claim paths ("revenue" from JSON "[0].revenue") and never produces
+	// evidence that supports or resolves the pre-planted UNVERIFIED items
+	// (claims "claim_N"). No cross-relations are formed, so verification state
+	// is unchanged and MissingPrimary remains >= 2.
 	if st.Evidence.MissingPrimary < 2 {
 		t.Errorf("MissingPrimary=%d, want >=2 (pre-planted UNVERIFIED evidence should persist unresolved)",
 			st.Evidence.MissingPrimary)
 	}
 
-	// --- STARVATION CHECK 4: Pre-planted PARTIALLY_VERIFIED evidence persists ---
+	// --- CHECK 4: Pre-planted PARTIALLY_VERIFIED evidence persists ---
+	// StaleSource was never selected: on non-last slots Contradiction won, and on
+	// the last slot MissingPrimary took priority among non-Contradiction triggers
+	// (decision.go:247-250). So PARTIALLY_VERIFIED evidence was never processed
+	// and StaleSources remains >= 2.
 	if st.Evidence.StaleSources < 2 {
 		t.Errorf("StaleSources=%d, want >=2 (pre-planted PARTIALLY_VERIFIED evidence should persist unresolved)",
 			st.Evidence.StaleSources)
@@ -1400,13 +1447,15 @@ func TestP9_Experiment5_PriorityStarvation(t *testing.T) {
 			"(evidence was resolved by some path)", disputedCount)
 	}
 
-	// --- STARVATION CHECK 6: No other task types processed the evidence ---
-	// If any natural path (e.g., Discover from MissingPrimary, FetchHTTP from
-	// StaleSource) had processed the UNVERIFIED/PARTIALLY_VERIFIED evidence,
-	// we would see Discover > 1 or FetchHTTP > 0 above. Their absence confirms
-	// no alternative path resolved the evidence.
+	// --- CHECK 6: Evidence was not resolved by non-Contradiction paths ---
+	// Discover tasks (from MissingPrimary on the last slot) and Reconcile tasks
+	// (from Contradiction on non-last slots) were issued, but the pre-planted
+	// UNVERIFIED/PARTIALLY_VERIFIED/DISPUTED evidence was NOT resolved because
+	// the worker uses different claim paths. The store-level counts above
+	// (uvCount, pvCount, disputedCount) confirm each pre-planted set retained
+	// its original verification state despite the non-Contradiction trigger firing.
 	if typeCounts[model.TaskTypeFetchBrowser] > 0 {
-		t.Logf("Note: FetchBrowser tasks=%d (escalation path, unrelated to starvation triggers)",
+		t.Logf("Note: FetchBrowser tasks=%d (escalation path, unrelated to reserve triggers)",
 			typeCounts[model.TaskTypeFetchBrowser])
 	}
 
@@ -1416,9 +1465,13 @@ func TestP9_Experiment5_PriorityStarvation(t *testing.T) {
 		t.Errorf("task count %d exceeds bound %d (possible infinite loop)", len(calls), maxExpected)
 	}
 
-	// --- VERDICT ---
-	starvationConfirmed := typeCounts[model.TaskTypeDiscover] <= 1 &&
-		typeCounts[model.TaskTypeFetchHTTP] == 0 &&
+	// --- VERDICT: last-slot reserve confirmed ---
+	// lastSlotReservedFired confirms a non-Contradiction trigger fired on the
+	// last slot; Verify+Reconcile confirm Contradiction fired on non-last slots;
+	// persistence checks confirm the pre-planted evidence was not resolved.
+	lastSlotReserveConfirmed := lastSlotReservedFired &&
+		typeCounts[model.TaskTypeVerify] >= 1 &&
+		typeCounts[model.TaskTypeReconcile] >= 1 &&
 		st.Evidence.MissingPrimary >= 2 &&
 		st.Evidence.StaleSources >= 2 &&
 		uvCount == 3 &&
@@ -1426,31 +1479,320 @@ func TestP9_Experiment5_PriorityStarvation(t *testing.T) {
 		st.TerminalReason == "research_complete"
 
 	t.Logf("")
-	t.Logf("=== STARVATION VERDICT ===")
-	if starvationConfirmed {
-		t.Logf("FULL STARRVATION CONFIRMED:")
-		t.Logf("  - Contradiction fired at all %d replan opportunities (ReplanCount=%d)", st.ReplanCount, st.ReplanCount)
-		t.Logf("  - MissingPrimary trigger NEVER fired (Discover tasks = %d, only seed)", typeCounts[model.TaskTypeDiscover])
-		t.Logf("  - StaleSource trigger NEVER fired (FetchHTTP tasks = 0)")
-		t.Logf("  - Pre-planted UNVERIFIED evidence (3 items) remained UNRESOLVED at termination")
-		t.Logf("  - Pre-planted PARTIALLY_VERIFIED evidence (3 items) remained UNRESOLVED at termination")
-		t.Logf("  - Dynamic contradiction injection: %d (Contradictions %d → %d)",
-			injections, 3, st.Evidence.Contradictions)
-		t.Logf("  - Terminal state: %q (not budget_exhausted)", st.TerminalReason)
-		t.Logf("  - No alternative path processed the starved evidence")
-	} else {
-		t.Logf("STARVATION NOT CONFIRMED:")
+	t.Logf("=== LAST-SLOT RESERVE VERDICT ===")
+	if lastSlotReserveConfirmed {
+		t.Logf("LAST-SLOT RESERVE CONFIRMED:")
+		t.Logf("  - Contradiction fired on non-last slots (Verify=%d, Reconcile=%d, ReplanCount=%d/%d)",
+			typeCounts[model.TaskTypeVerify], typeCounts[model.TaskTypeReconcile], st.ReplanCount, st.MaxReplans)
+		t.Logf("  - lastSlotReservedFired=%v (non-Contradiction trigger fired on last slot, remaining==1)", lastSlotReservedFired)
 		if typeCounts[model.TaskTypeDiscover] > 1 {
-			t.Logf("  - MissingPrimary triggered (Discover=%d)", typeCounts[model.TaskTypeDiscover])
+			t.Logf("  - MissingPrimary fired on last slot (Discover=%d including seed)", typeCounts[model.TaskTypeDiscover])
 		}
 		if typeCounts[model.TaskTypeFetchHTTP] > 0 {
-			t.Logf("  - StaleSource triggered (FetchHTTP=%d)", typeCounts[model.TaskTypeFetchHTTP])
+			t.Logf("  - StaleSource fired on last slot (FetchHTTP=%d)", typeCounts[model.TaskTypeFetchHTTP])
+		}
+		t.Logf("  - Pre-planted UNVERIFIED evidence (3 items) remained UNRESOLVED at termination")
+		t.Logf("  - Pre-planted PARTIALLY_VERIFIED evidence (3 items) remained UNRESOLVED at termination")
+		t.Logf("  - Dynamic contradiction injection: %d (Contradictions=%d)", injections, st.Evidence.Contradictions)
+		t.Logf("  - Terminal state: %q (Contradictions >= K → DecisionStop override)", st.TerminalReason)
+	} else {
+		t.Logf("LAST-SLOT RESERVE NOT CONFIRMED:")
+		if !lastSlotReservedFired {
+			t.Logf("  - No non-Contradiction trigger fired on last slot (Discover=%d, FetchHTTP=%d)",
+				typeCounts[model.TaskTypeDiscover], typeCounts[model.TaskTypeFetchHTTP])
+		}
+		if typeCounts[model.TaskTypeVerify] < 1 {
+			t.Logf("  - Contradiction did not fire on any non-last slot (Verify=0)")
+		}
+		if typeCounts[model.TaskTypeReconcile] < 1 {
+			t.Logf("  - Reconcile absent (Contradiction did not fire on non-last slots)")
+		}
+		if st.Evidence.MissingPrimary < 2 {
+			t.Logf("  - MissingPrimary=%d < 2 (UNVERIFIED evidence was resolved)", st.Evidence.MissingPrimary)
+		}
+		if st.Evidence.StaleSources < 2 {
+			t.Logf("  - StaleSources=%d < 2 (PARTIALLY_VERIFIED evidence was resolved)", st.Evidence.StaleSources)
 		}
 		if uvCount != 3 {
 			t.Logf("  - UNVERIFIED evidence partially resolved (%d/3)", uvCount)
 		}
 		if pvCount != 3 {
 			t.Logf("  - PARTIALLY_VERIFIED evidence partially resolved (%d/3)", pvCount)
+		}
+		if st.TerminalReason != "research_complete" {
+			t.Logf("  - Terminal state is %q (not research_complete)", st.TerminalReason)
+		}
+	}
+}
+
+// TestP9_Experiment5b_LastSlotReserve_StaleSourceBranch exercises the
+// last-slot reserve's StaleSource selection branch in replanTriggerIfAny
+// (decision.go:249-251): when remaining == 1 and MissingPrimary is NOT eligible
+// (MissingPrimary < MMissingPrimary) but StaleSource IS eligible (StaleSources >=
+// SStaleSources), StaleSource fires on the last slot instead of Contradiction.
+//
+// This is the complement of TestP9_Experiment5_PriorityStarvation, which plants
+// 3 UNVERIFIED items so MissingPrimary = 3 >= 2 (eligible) and triggers the
+// missEligible branch (decision.go:247-248). Here we plant only 1 UNVERIFIED so
+// MissingPrimary = 1 < 2 (NOT eligible); with StaleSources = 3 >= 2 (eligible),
+// the else-if staleEligible branch (decision.go:249-251) is exercised instead.
+//
+// Key determinism note: MissingPrimary in replanTriggerIfAny is read from the
+// COMMITTED (stale) evidence count (updateProgress, master.go:825), which is
+// only refreshed at drained() boundaries — NOT on every live query. The
+// p9Experiment5Worker injects UNVERIFIED evidence (claim "revenue") that would
+// pollute the LIVE MissingPrimary count, but the stale COMMITTED count remains
+// at the planted baseline of 1 throughout the non-drained decision loop, keeping
+// missEligible deterministically FALSE at the last slot. StaleSources, by
+// contrast, uses the LIVE count (master.go:827), which stays at the planted
+// baseline of 3 (the worker's "revenue" claim never forms SUPPORTS relations
+// with the pre-planted "shared_claim" PARTIALLY_VERIFIED evidence).
+func TestP9_Experiment5b_LastSlotReserve_StaleSourceBranch(t *testing.T) {
+	w := newP9Experiment5Worker()
+	bmgr := &fakeBrowserManager{}
+	m, _, es := newEvidenceTestGraph(t, w, bmgr)
+
+	req := model.IntentRequest{
+		Query:  "research Acme Corp, revenue",
+		Seeds:  []string{"https://alpha.example"},
+		UserID: "u1",
+	}
+	sid, err := m.SubmitIntent(req)
+	if err != nil {
+		t.Fatalf("SubmitIntent: %v", err)
+	}
+
+	// Plant evidence to create the StaleSource-branch condition on the last slot:
+	//   3 DISPUTED         → Contradictions = 3 >= KContradictions(2) → Contradiction
+	//                         fires on non-last slots (highest priority in switch).
+	//   1 UNVERIFIED        → MissingPrimary = 1 < MMissingPrimary(2) → NOT eligible,
+	//                         so the last-slot reserve does NOT select MissingPrimary.
+	//   3 PARTIALLY_VERIFIED → StaleSources = 3 >= SStaleSources(2) → eligible,
+	//                         so the last-slot reserve selects StaleSource.
+	p9PutDisputedEvidence(t, es, sid, 3)
+	p9PutUnverifiedEvidence(t, es, sid, 1)
+	p9PutPartiallyVerifiedEvidence(t, es, sid, 3)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := m.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	st := m.State()
+	calls := w.taskTypes()
+	typeCounts := p9CountTaskTypes(calls)
+	injections := w.injectionCount()
+
+	// Detection of last-slot StaleSource firing (decision.go:246-251):
+	//   Direct:  FetchHTTP tasks > 0 (StaleSource replan issues FetchHTTP,
+	//            planning.go:67-71). May be 0 if the last-slot tasks are not
+	//            dispatched before DecisionStop halts the session (mirroring the
+	//            Discover deficit documented in TestP9_Experiment5).
+	//   Indirect: Reconcile count < ReplanCount — each Contradiction replan
+	//     produces exactly 1 Reconcile (planning.go:61); a deficit means at least
+	//     one replan was non-Contradiction (StaleSource, which produces no Reconcile).
+	lastSlotReserveFired := typeCounts[model.TaskTypeFetchHTTP] > 0
+	if !lastSlotReserveFired {
+		lastSlotReserveFired = typeCounts[model.TaskTypeReconcile] < st.ReplanCount
+	}
+
+	t.Logf("=== Experiment 5b: Last-Slot Reserve StaleSource Branch ===")
+	t.Logf("Threshold constants: KContradictions=2, MMissingPrimary=2, SStaleSources=2, MaxReplans=3")
+	t.Logf("Last-slot reserve (decision.go:246-252): StaleSource fires when remaining==1")
+	t.Logf("  because MissingPrimary=%d < MMissingPrimary(2) AND StaleSources=%d >= SStaleSources(2)",
+		st.Evidence.MissingPrimary, st.Evidence.StaleSources)
+	t.Logf("Pre-populated evidence: 3 DISPUTED + 1 UNVERIFIED + 3 PARTIALLY_VERIFIED")
+	t.Logf("Evidence counts at termination: Contradictions=%d MissingPrimary=%d StaleSources=%d",
+		st.Evidence.Contradictions, st.Evidence.MissingPrimary, st.Evidence.StaleSources)
+	t.Logf("ReplanCount=%d (MaxReplans=%d)", st.ReplanCount, st.MaxReplans)
+	t.Logf("lastSlotReserveFired=%v (StaleSource fired on last slot, remaining==1)", lastSlotReserveFired)
+	t.Logf("Terminal=%v TerminalReason=%q", st.Terminal, st.TerminalReason)
+	t.Logf("EvidenceCount (total rows in store)=%d", st.EvidenceCount)
+	t.Logf("Contradiction injections by worker: %d", injections)
+	t.Logf("Worker task calls (ordered): %v", calls)
+	t.Logf("Task type counts: %v", typeCounts)
+	t.Logf("Total tasks executed: %d", len(calls))
+
+	// --- Terminal state ---
+	if !st.Terminal {
+		t.Fatalf("expected terminal state, got Terminal=%v reason=%q", st.Terminal, st.TerminalReason)
+	}
+	// Contradictions >= KContradictions (planted 3 + dynamic injections) →
+	// DecisionStop overrides terminal reason to "research_complete" (master.go:700-702).
+	if st.TerminalReason != "research_complete" {
+		t.Errorf("TerminalReason=%q, want research_complete (Contradictions >= K → DecisionStop override, master.go:700-702)",
+			st.TerminalReason)
+	}
+
+	// --- MaxReplans cap respected (overall, not per-trigger) ---
+	if st.ReplanCount > st.MaxReplans {
+		t.Errorf("ReplanCount=%d exceeds MaxReplans=%d (overall cap must hold)", st.ReplanCount, st.MaxReplans)
+	}
+	if st.ReplanCount < 1 {
+		t.Errorf("ReplanCount=%d, want >=1 (Contradiction trigger should fire on non-last slots)", st.ReplanCount)
+	}
+
+	// --- LAST-SLOT RESERVE CHECK: StaleSource fires on the last slot ---
+	// When remaining == 1: MissingPrimary is NOT eligible (committed count = 1,
+	// stale across the non-drained decision loop, < MMissingPrimary=2) but
+	// StaleSource IS eligible (live count = 3 >= SStaleSources=2), so the
+	// reserve selects StaleSource (decision.go:249-251).
+	//
+	// This is proven by StaleSource firing: the reserve selects StaleSource ONLY
+	// when missEligible is FALSE (decision.go:247 is skipped, falling to 249-251).
+	if !lastSlotReserveFired {
+		t.Errorf("LAST-SLOT RESERVE NOT OBSERVED: FetchHTTP tasks=%d (want >0) "+
+			"and Reconcile count=%d (want < ReplanCount=%d); StaleSource should "+
+			"have fired on the last replan slot (remaining==1) because "+
+			"MissingPrimary=%d < MMissingPrimary(2)",
+			typeCounts[model.TaskTypeFetchHTTP], typeCounts[model.TaskTypeReconcile],
+			st.ReplanCount, st.Evidence.MissingPrimary)
+	}
+
+	// --- NON-LAST-SLOT CHECK: Contradiction wins on non-last slots ---
+	// Contradiction has highest priority and Contradictions >= 2 persists
+	// (planted 3 + dynamic worker injections), so it fires on every non-last slot.
+	if typeCounts[model.TaskTypeVerify] < 1 {
+		t.Errorf("Verify tasks=%d, want >=1 (Contradiction replan on non-last slots produces Verify, planning.go:55-61)",
+			typeCounts[model.TaskTypeVerify])
+	}
+	if typeCounts[model.TaskTypeReconcile] < 1 {
+		t.Errorf("Reconcile tasks=%d, want >=1 (Contradiction replan on non-last slots produces Reconcile, planning.go:61)",
+			typeCounts[model.TaskTypeReconcile])
+	}
+
+	// --- CHECK: Contradictions persist (eligible on non-last slots and at DecisionStop) ---
+	// Planted 3 DISPUTED + worker dynamic injections ensure Contradictions >= 2
+	// throughout, keeping Contradiction eligible on non-last slots and making
+	// DecisionStop override the terminal reason to "research_complete".
+	if st.Evidence.Contradictions < 2 {
+		t.Errorf("Contradictions=%d, want >=2 (planted 3 + dynamic injections; must persist for Contradiction priority on non-last slots)",
+			st.Evidence.Contradictions)
+	}
+	if injections <= 3 {
+		t.Errorf("worker injections=%d, want >3 (dynamic contradiction injection during replan-issued Verify tasks)", injections)
+	}
+	if injections == 0 {
+		t.Errorf("worker contradiction injections=%d, want >0 (worker must inject during replan tasks)", injections)
+	}
+
+	// --- CHECK: MissingPrimary NOT eligible at last slot (MissingPrimary < MMissingPrimary) ---
+	// The committed MissingPrimary count is 1 (planted UNVERIFIED) and is NOT
+	// refreshed between drained() boundaries, so it stays < 2 at the last-slot
+	// decision. The pre-planted UNVERIFIED evidence persists (store-level check
+	// below confirms uvCount=1), proving MissingPrimary was below threshold.
+	if st.Evidence.MissingPrimary < 1 {
+		t.Errorf("MissingPrimary=%d, want >=1 (planted 1 UNVERIFIED should persist as baseline)",
+			st.Evidence.MissingPrimary)
+	}
+	if st.Evidence.MissingPrimary >= 2 {
+		t.Errorf("MissingPrimary=%d, want <2 (committed count should stay at planted "+
+			"baseline of 1 throughout the non-drained decision loop; "+
+			"worker-injected UNVERIFIED items are in live counts only, not committed)",
+			st.Evidence.MissingPrimary)
+	}
+
+	// --- CHECK: StaleSource IS eligible (StaleSources >= SStaleSources=2) ---
+	// Pre-planted PARTIALLY_VERIFIED persists (worker uses different claim paths,
+	// no cross-relations), so StaleSources >= 2 holds throughout.
+	if st.Evidence.StaleSources < 2 {
+		t.Errorf("StaleSources=%d, want >=2 (pre-planted PARTIALLY_VERIFIED should persist unchanged)",
+			st.Evidence.StaleSources)
+	}
+
+	// --- STARVATION CHECK: Store-level verification of pre-planted evidence ---
+	// Query the SQLite store by source ID to confirm the pre-planted evidence
+	// items retained their original verification states at termination.
+	unverifiedSources := []string{"src0.example"}
+	pvSources := []string{"stale0.example", "stale1.example", "stale2.example"}
+	disputedSources := []string{"disputed0.example", "disputed1.example", "disputed2.example"}
+
+	uvCount := p9CountEvidenceBySource(t, es, sid, model.VerificationUnverified, unverifiedSources)
+	pvCount := p9CountEvidenceBySource(t, es, sid, model.VerificationPartiallyVerified, pvSources)
+	disputedCount := p9CountEvidenceBySource(t, es, sid, model.VerificationDisputed, disputedSources)
+
+	t.Logf("Pre-planted evidence verification states at termination (queried by source ID):")
+	t.Logf("  UNVERIFIED items     (src0.example):     %d/1", uvCount)
+	t.Logf("  PARTIALLY_VERIFIED   (staleN.example):  %d/3", pvCount)
+	t.Logf("  DISPUTED items       (disputedN.example): %d/3", disputedCount)
+
+	if uvCount != 1 {
+		t.Errorf("UNVERIFIED pre-planted evidence: %d/1 remain UNVERIFIED at termination "+
+			"(evidence was processed/resolved by some path)", uvCount)
+	}
+	if pvCount != 3 {
+		t.Errorf("PARTIALLY_VERIFIED pre-planted evidence: %d/3 remain PARTIALLY_VERIFIED at termination "+
+			"(evidence was processed/resolved by some path)", pvCount)
+	}
+	if disputedCount != 3 {
+		t.Errorf("DISPUTED pre-planted evidence: %d/3 remain DISPUTED at termination "+
+			"(evidence was resolved by some path)", disputedCount)
+	}
+
+	// --- Bounded task count (no infinite loop) ---
+	maxExpected := 1 + st.MaxReplans*4 + 8
+	if len(calls) > maxExpected {
+		t.Errorf("task count %d exceeds bound %d (possible infinite loop)", len(calls), maxExpected)
+	}
+
+	// --- VERDICT: last-slot reserve confirmed ---
+	// StaleSource fired on the last slot (FetchHTTP>0 or Reconcile deficit),
+	// Contradiction fired on non-last slots (Verify + Reconcile >= 1), and
+	// pre-planted evidence persisted unchanged.
+	lastSlotReserveConfirmed := lastSlotReserveFired &&
+		typeCounts[model.TaskTypeVerify] >= 1 &&
+		typeCounts[model.TaskTypeReconcile] >= 1 &&
+		st.Evidence.Contradictions >= 2 &&
+		st.Evidence.StaleSources >= 2 &&
+		uvCount == 1 &&
+		pvCount == 3 &&
+		st.TerminalReason == "research_complete"
+
+	t.Logf("")
+	t.Logf("=== LAST-SLOT RESERVE VERDICT ===")
+	if lastSlotReserveConfirmed {
+		t.Logf("LAST-SLOT RESERVE CONFIRMED:")
+		t.Logf("  - Contradiction fired on non-last slots (Verify=%d, Reconcile=%d, ReplanCount=%d/%d)",
+			typeCounts[model.TaskTypeVerify], typeCounts[model.TaskTypeReconcile], st.ReplanCount, st.MaxReplans)
+		t.Logf("  - lastSlotReserveFired=%v (StaleSource fired on last slot, remaining==1)", lastSlotReserveFired)
+		if typeCounts[model.TaskTypeFetchHTTP] > 0 {
+			t.Logf("  - StaleSource fired on last slot (FetchHTTP=%d)", typeCounts[model.TaskTypeFetchHTTP])
+		} else {
+			t.Logf("  - StaleSource fired on last slot (inferred via Reconcile deficit: %d < %d)",
+				typeCounts[model.TaskTypeReconcile], st.ReplanCount)
+		}
+		t.Logf("  - Pre-planted UNVERIFIED evidence (1 item) remained UNRESOLVED at termination")
+		t.Logf("  - Pre-planted PARTIALLY_VERIFIED evidence (3 items) remained UNRESOLVED at termination")
+		t.Logf("  - Dynamic contradiction injection: %d (Contradictions=%d)", injections, st.Evidence.Contradictions)
+		t.Logf("  - Terminal state: %q (Contradictions >= K → DecisionStop override)", st.TerminalReason)
+	} else {
+		t.Logf("LAST-SLOT RESERVE NOT CONFIRMED:")
+		if !lastSlotReserveFired {
+			t.Logf("  - No StaleSource trigger on last slot (FetchHTTP=%d, Reconcile=%d/%d)",
+				typeCounts[model.TaskTypeFetchHTTP], typeCounts[model.TaskTypeReconcile], st.ReplanCount)
+		}
+		if typeCounts[model.TaskTypeVerify] < 1 {
+			t.Logf("  - Contradiction did not fire on any non-last slot (Verify=0)")
+		}
+		if typeCounts[model.TaskTypeReconcile] < 1 {
+			t.Logf("  - Reconcile absent (Contradiction did not fire on non-last slots)")
+		}
+		if st.Evidence.Contradictions < 2 {
+			t.Logf("  - Contradictions=%d < 2 (planted evidence resolved?)", st.Evidence.Contradictions)
+		}
+		if st.Evidence.StaleSources < 2 {
+			t.Logf("  - StaleSources=%d < 2 (PARTIALLY_VERIFIED evidence was resolved)", st.Evidence.StaleSources)
+		}
+		if st.Evidence.MissingPrimary >= 2 {
+			t.Logf("  - MissingPrimary=%d >= 2 (UNVERIFIED evidence unexpectedly eligible on last slot)",
+				st.Evidence.MissingPrimary)
+		}
+		if uvCount != 1 {
+			t.Logf("  - UNVERIFIED evidence not intact (%d/1)", uvCount)
+		}
+		if pvCount != 3 {
+			t.Logf("  - PARTIALLY_VERIFIED evidence not intact (%d/3)", pvCount)
 		}
 		if st.TerminalReason != "research_complete" {
 			t.Logf("  - Terminal state is %q (not research_complete)", st.TerminalReason)

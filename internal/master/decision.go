@@ -229,6 +229,27 @@ func replanTriggerIfAny(in DecisionInput) *ReplanTrigger {
 	if rp.KContradictions <= 0 && rp.MMissingPrimary <= 0 && rp.SStaleSources <= 0 {
 		return nil
 	}
+	remaining := st.MaxReplans - st.ReplanCount
+	missEligible := st.Evidence.MissingPrimary >= rp.MMissingPrimary
+	staleEligible := st.Evidence.StaleSources >= rp.SStaleSources
+	// DRAW's research strategy prioritizes evidence *coverage breadth* over exhaustive contradiction resolution.
+	// Unbounded Contradiction-priority monopolization of the replan budget starves MissingPrimary/StaleSource —
+	// the two trigger types responsible for expanding coverage into unverified or stale-sourced territory —
+	// even when they have qualifying evidence throughout an entire session. This reserve guarantees at least
+	// one replan opportunity goes toward coverage expansion rather than contradiction resolution, without
+	// disturbing Contradiction's priority on any other slot. Do not remove this without new evidence that
+	// coverage starvation is no longer a real risk under current evidence-threshold defaults.
+	// no further expansion, tuning, or generalization of this fairness mechanism (e.g., extending it to
+	// reserve multiple slots, or applying decay/aging) is authorized until real operational data from actual
+	// agent-driven sessions (not synthetic test fixtures) demonstrates a concrete need. This is a deliberate
+	// scope freeze, not an oversight.
+	if remaining == 1 {
+		if missEligible {
+			return &ReplanTrigger{Kind: ReplanTriggerMissingPrimary, MissingTopic: "unknown"}
+		} else if staleEligible {
+			return &ReplanTrigger{Kind: ReplanTriggerStaleSource}
+		}
+	}
 	switch {
 	case st.Evidence.Contradictions >= rp.KContradictions:
 		return &ReplanTrigger{Kind: ReplanTriggerContradiction}
