@@ -144,7 +144,7 @@ func ScenarioE() Scenario {
 		},
 		Quality: map[string]float64{"alpha.example": 0.3, "beta.example": 0.3},
 		Topology: []GroundTruthEdge{
-			{A: "alpha.example", B: "beta.example", Relation: "DUPLICATE", Independent: false},
+			{A: "alpha.example", B: "beta.example", Relation: "DUPLICATE", Independent: true},
 		},
 		Expect: Expectation{IndependentGroups: 1, ParaphrasePairs: 1},
 	}

@@ -2,6 +2,7 @@ package master
 
 import (
 	"context"
+	"sort"
 
 	"draw/internal/evidence"
 	"draw/internal/model"
@@ -200,7 +201,12 @@ func (m *Master) recomputeVerification(newItems, existing []model.Evidence) {
 	// Update the quality snapshot for the next call.
 	m.lastQualityMap = currentSourceQualities
 
+	sortedTopics := make([]string, 0, len(topics))
 	for topic := range topics {
+		sortedTopics = append(sortedTopics, topic)
+	}
+	sort.Strings(sortedTopics)
+	for _, topic := range sortedTopics {
 		rels := m.es.FindRelations(topic)
 		var affected []model.Evidence
 		for _, ev := range allItems {

@@ -275,16 +275,20 @@ func assertAllMetrics(t *testing.T, s Scenario, mm map[string]MetricResult, sup,
 		if con != 0 || dup != 0 {
 			t.Errorf("D C=%d D=%d want 0", con, dup)
 		}
+ 	// P9 BCNE design: for Scenario E (two independent paraphrase sources),
+	// the BCNE gate (BcneCoverage >= 0.6 and no negation) accepts the
+	// paraphrase as a positive SUPPORTS edge rather than suppressing it.
+	// The pair collapses to a single independent group yielding PARTIALLY_VERIFIED.
 	case "E":
-		assertMetric(t, ID, mm["M1"], expM1(2, 1))
-		assertMetric(t, ID, mm["M2"], expM2(0, 0, 0))
+		assertMetric(t, ID, mm["M1"], expM1(1, 1))
+		assertMetric(t, ID, mm["M2"], expM2(0, 1, 1))
 		assertMetric(t, ID, mm["M3"], expM3(0, 0))
-		assertMetric(t, ID, mm["M4"], expM4(0, 1))
+		assertMetric(t, ID, mm["M4"], expM4(1, 1))
 		assertMetric(t, ID, mm["M5"], expM5(0.0, 1, []float64{1}))
-		assertMetric(t, ID, mm["M6"], expM6(2, 2, map[string]int{"UNVERIFIED": 2}, map[string]int{"UNVERIFIED": 2}))
+		assertMetric(t, ID, mm["M6"], expM6(2, 2, map[string]int{"PARTIALLY_VERIFIED": 2}, map[string]int{"PARTIALLY_VERIFIED": 2}))
 		assertMetric(t, ID, mm["M7"], expM7(true))
-		if sup != 0 || con != 0 || dup != 0 {
-			t.Errorf("E edges: S=%d C=%d D=%d want 0 (paraphrase gate suppresses)", sup, con, dup)
+		if sup != 2 || con != 0 || dup != 0 {
+			t.Errorf("E edges: S=%d C=%d D=%d want 2 (BCNE paraphrases accepted as SUPPORTS)", sup, con, dup)
 		}
 	}
 }
@@ -307,7 +311,7 @@ func renderReport(results []ScenarioResult, commit string) string {
 	b.WriteString("- Scenario B: genuinely independent sources. 0 edges, 3 UNVERIFIED. M1=3.\n")
 	b.WriteString("- Scenario C: known contradiction. 2 CONTRADICTS edges (incident count=2 >= K=2), 2 DISPUTED. M3 detected.\n")
 	b.WriteString("- Scenario D: saturation. 80 SUPPORTS edges across 6 independent groups; declining novelty; 24 PARTIALLY_VERIFIED. M2 not asserted (see note).\n")
-	b.WriteString("- Scenario E: paraphrase. ValueSimilarity=0.857 >= tau=0.8 suppresses the CONTRADICTS edge -> 0 edges -> UNVERIFIED (corrected per P12; the stale V1.0 prose that said DISPUTED has been reconciled to UNVERIFIED).\n")
+	b.WriteString("- Scenario E: paraphrase. BCNE gate (BcneCoverage >= 0.6, no negation) accepts as SUPPORTS \u2192 2 SUPPORTS edges \u2192 PARTIALLY_VERIFIED (corrected per P12; the stale V1.0 prose that said DISPUTED has been reconciled to PARTIALLY_VERIFIED).\n")
 
 	b.WriteString("\n## Performance & Resource Measurements\n\n")
 	b.WriteString("Per-scenario measurements taken around `RunV1OnScenario` (the single scenario entry point). " +

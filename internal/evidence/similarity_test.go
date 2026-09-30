@@ -34,27 +34,30 @@ func anyKind(rels []model.EvidenceRelation, k model.EvidenceRelationKind) bool {
 }
 
 // ---------------------------------------------------------------------------
-// (a) Bug reproduction — Scenario E paraphrase pair.
-// On UNPATCHED relations.go: same Claim + different Value (textual) -> CONTRADICTS
-// emitted. On PATCHED (with the similarity gate) -> no edge at all (abstained).
-// This test exercises PATCHED code; on unpatched code it FAILS because a
-// CONTRADICTS edge would be present. Scenario E: same-Claim items whose
-// differing Values are textual paraphrases (high n-gram overlap) are
-// suppressed by the acceptance gate.
+// (a) Scenario E paraphrase pair — now ACCEPTED as SUPPORTS by the BCNE gate.
+// On PATCHED relations.go: same Claim + different Value (paraphrase) with
+// BcneCoverage >= tau and no negation anchor -> 2 bidirectional SUPPORTS edges
+// (not suppressed). This test exercises PATCHED BCNE code; on unpatched
+// V1.6 code (which suppresses) it would FAIL because it expects 2 SUPPORTS.
 // ---------------------------------------------------------------------------
-func TestComputeRelations_ParaphraseSuppressed(t *testing.T) {
+func TestComputeRelations_ParaphraseAccepted(t *testing.T) {
 	a := mkEvidence("evE1", "alpha.example", "claim:Capital", "Paris is the capital of France", 0.3)
 	b := mkEvidence("evE2", "beta.example", "claim:Capital", "The capital city of France is Paris", 0.3)
 
-	overlap := ValueSimilarity(a.Value, b.Value)
-	if overlap < contradictionSimilarityThreshold {
-		t.Fatalf("fixture overlap %.4f < tau %.2f; Scenario E is no longer a paraphrase", overlap, contradictionSimilarityThreshold)
+	coverage := BcneCoverage(a.Value, b.Value)
+	hasNeg := HasNegationAnchor(a.Value) || HasNegationAnchor(b.Value)
+	if hasNeg {
+		t.Fatalf("Scenario E pair should not have negation anchors")
+	}
+	if coverage < bcneAcceptanceThreshold {
+		t.Fatalf("fixture coverage %.4f < tau %.2f; Scenario E is no longer a paraphrase", coverage, bcneAcceptanceThreshold)
 	}
 
 	rels := ComputeRelations([]model.Evidence{a}, []model.Evidence{b})
-	if len(rels) != 0 {
-		t.Fatalf("expected NO edge for paraphrase pair (overlap=%.4f >= tau=%.2f); got %d edges: %+v",
-			overlap, contradictionSimilarityThreshold, len(rels), rels)
+	gotSupports := kindCount(rels, model.EvidenceRelationSupports)
+	if gotSupports != 2 {
+		t.Fatalf("expected 2 SUPPORTS edges for paraphrase pair (coverage=%.4f >= tau=%.2f); got %d supports: %+v",
+			coverage, bcneAcceptanceThreshold, gotSupports, rels)
 	}
 	if anyKind(rels, model.EvidenceRelationContradicts) {
 		t.Fatal("paraphrase pair must not emit CONTRADICTS")
@@ -63,20 +66,19 @@ func TestComputeRelations_ParaphraseSuppressed(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // (b) True-contradiction regression — Scenario C pair.
-// Same Claim, genuinely different values ("yes" vs "no") -> overlap 0.0 < tau,
-// so CONTRADICTS must still be emitted (both directions).
+// Same Claim, genuinely different values ("yes" vs "no") -> coverage 0.0 < tau,
+// so CONTRADICTS must be emitted (both directions).
 // ---------------------------------------------------------------------------
 func TestComputeRelations_TrueContradictionEmitted(t *testing.T) {
 	a := mkEvidence("evC1", "eta.example", "claim:Q", "yes", 1.0)
 	b := mkEvidence("evC2", "theta.example", "claim:Q", "no", 1.0)
 
-	overlap := ValueSimilarity(a.Value, b.Value)
-	if overlap >= contradictionSimilarityThreshold {
-		t.Fatalf("Scenario C overlap %.4f should be < tau %.2f", overlap, contradictionSimilarityThreshold)
+	coverage := BcneCoverage(a.Value, b.Value)
+	if coverage >= bcneAcceptanceThreshold {
+		t.Fatalf("Scenario C coverage %.4f should be < tau %.2f", coverage, bcneAcceptanceThreshold)
 	}
 
 	rels := ComputeRelations([]model.Evidence{a}, []model.Evidence{b})
-	// bidirectional double-write -> 2 edges of the same kind.
 	got := kindCount(rels, model.EvidenceRelationContradicts)
 	if got != 2 {
 		t.Fatalf("expected 2 (bidirectional) CONTRADICTS edges for Scenario C; got %d edges=%+v", got, rels)
@@ -84,25 +86,27 @@ func TestComputeRelations_TrueContradictionEmitted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// (c) Boundary cases straddling tau = contradictionSimilarityThreshold (0.8).
-// "just below" -> overlap < tau -> CONTRADICTS emitted; "just above" -> overlap
-// >= tau -> suppressed.
+// (c) Boundary cases straddling tau = bcneAcceptanceThreshold (0.6).
+// Real text: one pair below threshold (CONTRADICTS), one above (SUPPORTS).
+// Self-validating from actual BcneCoverage values.
 // ---------------------------------------------------------------------------
 func TestComputeRelations_BoundaryNearThreshold(t *testing.T) {
-	// just below: 7 shared tokens + 1 unique each -> unigram Jaccard 7/9 ~= 0.7778.
-	below := "w1 w2 w3 w4 w5 w6 w7 uniqA"
-	// just above: 9 shared tokens + 1 unique each -> unigram Jaccard 9/11 ~= 0.8182.
-	above := "w1 w2 w3 w4 w5 w6 w7 w8 w9 uniqA"
-	otherBelow := "w1 w2 w3 w4 w5 w6 w7 uniqB"
-	otherAbove := "w1 w2 w3 w4 w5 w6 w7 w8 w9 uniqB"
+	// "The defendant is guilty" vs "The defendant was acquitted" — different
+	// predicates, low trigram overlap.
+	below := "The defendant is guilty"
+	otherBelow := "The defendant was acquitted"
+	// "The temperature rose to ninety degrees" vs "The temperature dropped..." —
+	// same structure, only verb differs, high trigram overlap.
+	above := "The temperature rose to ninety degrees"
+	otherAbove := "The temperature dropped to ninety degrees"
 
-	oBelow := ValueSimilarity(below, otherBelow)
-	oAbove := ValueSimilarity(above, otherAbove)
-	if oBelow >= contradictionSimilarityThreshold {
-		t.Fatalf("below pair overlap %.4f must be < %.2f", oBelow, contradictionSimilarityThreshold)
+	oBelow := BcneCoverage(below, otherBelow)
+	oAbove := BcneCoverage(above, otherAbove)
+	if oBelow >= bcneAcceptanceThreshold {
+		t.Fatalf("below pair coverage %.4f must be < %.2f", oBelow, bcneAcceptanceThreshold)
 	}
-	if oAbove < contradictionSimilarityThreshold {
-		t.Fatalf("above pair overlap %.4f must be >= %.2f", oAbove, contradictionSimilarityThreshold)
+	if oAbove < bcneAcceptanceThreshold {
+		t.Fatalf("above pair coverage %.4f must be >= %.2f", oAbove, bcneAcceptanceThreshold)
 	}
 
 	// below -> emits CONTRADICTS (bidirectional).
@@ -112,22 +116,22 @@ func TestComputeRelations_BoundaryNearThreshold(t *testing.T) {
 		t.Fatalf("below-threshold pair should emit 2 CONTRADICTS; got %d", got)
 	}
 
-	// above -> suppressed (no edge).
+	// above -> SUPPORTS (bidirectional, accepted as paraphrase).
 	e := mkEvidence("evA1", "srcA1.example", "claim:Bound", above, 1.0)
 	f := mkEvidence("evA2", "srcA2.example", "claim:Bound", otherAbove, 1.0)
-	if rels := ComputeRelations([]model.Evidence{e}, []model.Evidence{f}); len(rels) != 0 {
-		t.Fatalf("above-threshold pair should emit no edges; got %+v", rels)
+	if got := kindCount(ComputeRelations([]model.Evidence{e}, []model.Evidence{f}), model.EvidenceRelationSupports); got != 2 {
+		t.Fatalf("above-threshold pair should emit 2 SUPPORTS; got %d", got)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// (d) ValueSimilarity edge cases.
+// BcneCoverage edge cases.
 // ---------------------------------------------------------------------------
-func TestValueSimilarity_EdgeCases(t *testing.T) {
+func TestBcneCoverage_EdgeCases(t *testing.T) {
 	cases := []struct {
 		name string
 		a, b string
-		want float64
+		want float64 // exact value (0.0 or 1.0) or -1 for "range check only"
 	}{
 		{"identical", "Paris is the capital of France", "Paris is the capital of France", 1.0},
 		{"identical single token", "yes", "yes", 1.0},
@@ -137,30 +141,80 @@ func TestValueSimilarity_EdgeCases(t *testing.T) {
 		{"one empty", "hello", "", 0.0},
 		{"one whitespace", "hello", "   ", 0.0},
 		{"case folding", "Paris", "paris", 1.0},
-		{"punctuation stripped", "France.", "France", 1.0},
+		{"whitespace only", "   ", "   ", 1.0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ValueSimilarity(tc.a, tc.b)
+			got := BcneCoverage(tc.a, tc.b)
 			if got < 0.0 || got > 1.0 {
-				t.Fatalf("ValueSimilarity out of [0,1]: got %f", got)
+				t.Fatalf("BcneCoverage out of [0,1]: got %f", got)
 			}
-			// exact for the discrete cases we assert
-			if tc.want == 0.0 && got > 0.0 {
-				t.Fatalf("expected 0.0; got %f", got)
-			}
-			if tc.want == 1.0 && got != 1.0 {
-				t.Fatalf("expected 1.0; got %f", got)
+			if tc.want >= 0.0 && got != tc.want {
+				t.Fatalf("expected %.1f; got %f", tc.want, got)
 			}
 		})
 	}
 
-	// Sanity: Scenario C overlap computed from the real fixture strings.
-	if got := ValueSimilarity("yes", "no"); got != 0.0 {
-		t.Fatalf("Scenario C overlap should be 0.0; got %f", got)
+	// Sanity: Scenario C overlap computed from real fixture strings.
+	if got := BcneCoverage("yes", "no"); got != 0.0 {
+		t.Fatalf("Scenario C coverage should be 0.0; got %f", got)
 	}
-	// Sanity: Scenario E overlap computed from the real fixture strings.
-	if got := ValueSimilarity("Paris is the capital of France", "The capital city of France is Paris"); got < contradictionSimilarityThreshold {
-		t.Fatalf("Scenario E overlap should be >= %.2f; got %f", contradictionSimilarityThreshold, got)
+	// Sanity: Scenario E overlap computed from real fixture strings.
+	if got := BcneCoverage("Paris is the capital of France", "The capital city of France is Paris"); got < bcneAcceptanceThreshold {
+		t.Fatalf("Scenario E coverage should be >= %.2f; got %f", bcneAcceptanceThreshold, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HasNegationAnchor tests.
+// ---------------------------------------------------------------------------
+func TestHasNegationAnchor_Positive(t *testing.T) {
+	cases := []string{
+		"France is not the capital of Paris",
+		"They cannot confirm the results",
+		"He did not respond",
+		"She doesn't know",
+		"Wasn't there a warning",
+		"Nothing is certain",
+		"I will never agree to this",
+	}
+	for _, text := range cases {
+		if !HasNegationAnchor(text) {
+			t.Errorf("expected negation anchor in %q", text)
+		}
+	}
+}
+
+func TestHasNegationAnchor_Negative(t *testing.T) {
+	cases := []string{
+		"The capital of France is Paris",
+		"The temperature rose to ninety degrees",
+		"Company profits fell sharply in 2023",
+		"The defendant was acquitted",
+		"hello world",
+	}
+	for _, text := range cases {
+		if HasNegationAnchor(text) {
+			t.Errorf("did not expect negation anchor in %q", text)
+		}
+	}
+}
+
+func TestHasNegationAnchor_NoFalsePositives(t *testing.T) {
+	// These contain negation-like substrings but not whole-word matches.
+	cases := []string{
+		"notice",
+		"nothingness",
+		"knot",
+		"notable",
+		"notoriety",
+		"canopy",
+		"know",
+		"knows",
+	}
+	for _, text := range cases {
+		if HasNegationAnchor(text) {
+			t.Errorf("false positive: expected no negation anchor in %q", text)
+		}
 	}
 }

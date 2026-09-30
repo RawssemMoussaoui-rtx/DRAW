@@ -3,7 +3,7 @@
 Reproducer: internal/evalharness TestBaseline (P13: deterministic, no time.Now).
 
 Timestamp (UTC): 2026-08-23T16:06:51Z
-Git commit: 0323b0e550283bf0e6fe6c0f1e8a23478f9eff2b
+Git commit: 4d0902b14ea0ca9e1932db12b6b3793054728b44
 
 ## Scenario A
 
@@ -47,12 +47,12 @@ M7: {"Equal":true}
 
 ## Scenario E
 
-M1: {"Predicted":2,"Expected":1,"Accuracy":0}
-M2: {"FP":0,"TP":0,"Total":0,"Rate":0}
+M1: {"Predicted":1,"Expected":1,"Accuracy":1}
+M2: {"FP":0,"TP":1,"Total":1,"Rate":0}
 M3: {"Detected":0,"Total":0,"Rate":0}
-M4: {"Collapsed":0,"Total":1,"Recall":0}
+M4: {"Collapsed":1,"Total":1,"Recall":1}
 M5: {"Slope":0,"Window":1,"Novelty":[1]}
-M6: {"Matches":2,"Total":2,"Accuracy":1,"Expected":{"UNVERIFIED":2},"Observed":{"UNVERIFIED":2}}
+M6: {"Matches":2,"Total":2,"Accuracy":1,"Expected":{"PARTIALLY_VERIFIED":2},"Observed":{"PARTIALLY_VERIFIED":2}}
 M7: {"Equal":true}
 
 ## Findings
@@ -61,7 +61,7 @@ M7: {"Equal":true}
 - Scenario B: genuinely independent sources. 0 edges, 3 UNVERIFIED. M1=3.
 - Scenario C: known contradiction. 2 CONTRADICTS edges (incident count=2 >= K=2), 2 DISPUTED. M3 detected.
 - Scenario D: saturation. 80 SUPPORTS edges across 6 independent groups; declining novelty; 24 PARTIALLY_VERIFIED. M2 not asserted (see note).
-- Scenario E: paraphrase. ValueSimilarity=0.857 >= tau=0.8 suppresses the CONTRADICTS edge -> 0 edges -> UNVERIFIED (corrected per P12; the stale V1.0 prose that said DISPUTED has been reconciled to UNVERIFIED).
+- Scenario E: paraphrase. BCNE gate (BcneCoverage >= 0.6, no negation) accepts as SUPPORTS → 2 SUPPORTS edges → PARTIALLY_VERIFIED (corrected per P12; the stale V1.0 prose that said DISPUTED has been reconciled to PARTIALLY_VERIFIED).
 
 ## Performance & Resource Measurements
 
@@ -70,34 +70,34 @@ Per-scenario measurements taken around `RunV1OnScenario` (the single scenario en
 Time and memory are inherently non-deterministic and are expected to differ between runs; the M1-M7 section above is deterministic (no time.Now) and should be byte-identical across runs. The DB query count is structural and is likewise stable across runs.
 
 ### Scenario A
-- Elapsed: 5.386 ms
-- Allocated (TotalAlloc delta): 37472 bytes
-- Live heap (Alloc): 420032 bytes
+- Elapsed: 3.254 ms
+- Allocated (TotalAlloc delta): 38064 bytes
+- Live heap (Alloc): 426616 bytes
 - DB queries: 27
 
 ### Scenario B
-- Elapsed: 1.057 ms
-- Allocated (TotalAlloc delta): 22600 bytes
-- Live heap (Alloc): 431912 bytes
+- Elapsed: 1.060 ms
+- Allocated (TotalAlloc delta): 22376 bytes
+- Live heap (Alloc): 443880 bytes
 - DB queries: 13
 
 ### Scenario C
-- Elapsed: 1.963 ms
-- Allocated (TotalAlloc delta): 23184 bytes
-- Live heap (Alloc): 439664 bytes
+- Elapsed: 1.613 ms
+- Allocated (TotalAlloc delta): 21968 bytes
+- Live heap (Alloc): 454656 bytes
 - DB queries: 13
 
 ### Scenario D
-- Elapsed: 8.516 ms
-- Allocated (TotalAlloc delta): 187112 bytes
-- Live heap (Alloc): 621632 bytes
+- Elapsed: 17.243 ms
+- Allocated (TotalAlloc delta): 186984 bytes
+- Live heap (Alloc): 630200 bytes
 - DB queries: 135
 
 ### Scenario E
-- Elapsed: 1.058 ms
-- Allocated (TotalAlloc delta): 23680 bytes
-- Live heap (Alloc): 475992 bytes
-- DB queries: 11
+- Elapsed: 1.060 ms
+- Allocated (TotalAlloc delta): 27496 bytes
+- Live heap (Alloc): 480080 bytes
+- DB queries: 13
 
 ## Performance measurement methodology
 

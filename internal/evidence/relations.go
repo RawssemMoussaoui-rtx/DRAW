@@ -14,7 +14,10 @@ import (
 //   - Same Claim + same Value:
 //   -   same SourceID  → DUPLICATES (Strength=1.0)
 //   -   diff SourceID  → SUPPORTS (Strength = min(n.Confidence, e.Confidence), clamped [0,1])
-//   - Same Claim + different Value → CONTRADICTS (Strength=1.0)
+//   - Same Claim + different Value → BCNE gate:
+//     1. HasNegationAnchor(n.Value) || HasNegationAnchor(e.Value) → CONTRADICTS (Strength=1.0, ANRB hard veto)
+//     2. BcneCoverage(n.Value, e.Value) >= bcneAcceptanceThreshold → SUPPORTS (Strength = min confidence, clamped [0,1])
+//     3. otherwise → CONTRADICTS (Strength=1.0)
 //   - Different Claim → no relation (skip)
 //
 // Each relation is emitted bidirectionally (n→e and e→n) so that both the
@@ -48,20 +51,20 @@ func ComputeRelations(newEvidence, existingEvidence []model.Evidence) []model.Ev
 					strength = clampFloat(min(n.Confidence, e.Confidence), 0.0, 1.0)
 				}
 			} else {
-				// Paraphrase gate: when the differing Values are highly
-				// similar (same fact, different wording — a paraphrase
-				// suppressed by the acceptance gate), suppress the CONTRADICTS
-				// edge entirely. This is a
-				// pure abstention — no edge is emitted and no new relation Kind is
-				// introduced (no enum or migration change). Genuine contradictions
-				// (Scenario C) fall through with overlap < threshold and emit
-				// CONTRADICTS as before. See Stage 2 acceptance-gate protocol
-				// (tau = contradictionSimilarityThreshold).
-				if ValueSimilarity(n.Value, e.Value) >= contradictionSimilarityThreshold {
-					continue
+				// BCNE gate: same Claim, different Value.
+				if HasNegationAnchor(n.Value) || HasNegationAnchor(e.Value) {
+					// ANRB hard veto: negation anchor forces a strict contradiction.
+					kind = model.EvidenceRelationContradicts
+					strength = 1.0
+				} else if BcneCoverage(n.Value, e.Value) >= bcneAcceptanceThreshold {
+					// High char-trigram overlap => paraphrase => SUPPORTS.
+					kind = model.EvidenceRelationSupports
+					strength = clampFloat(min(n.Confidence, e.Confidence), 0.0, 1.0)
+				} else {
+					// Low overlap and no negation => genuine contradiction.
+					kind = model.EvidenceRelationContradicts
+					strength = 1.0
 				}
-				kind = model.EvidenceRelationContradicts
-				strength = 1.0
 			}
 
 			emitRelation(&relations, &seen, n.ID, e.ID, kind, strength)

@@ -195,7 +195,13 @@ func normalizeEvidence(evs []model.Evidence) []byte {
 		if si != sj {
 			return si < sj
 		}
-		return out[i].ExtractionSeq < out[j].ExtractionSeq
+		if out[i].ExtractionSeq != out[j].ExtractionSeq {
+			return out[i].ExtractionSeq < out[j].ExtractionSeq
+		}
+		if out[i].Verification != out[j].Verification {
+			return out[i].Verification < out[j].Verification
+		}
+		return out[i].Confidence < out[j].Confidence
 	})
 	b, _ := json.Marshal(out)
 	return b
