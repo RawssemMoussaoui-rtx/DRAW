@@ -13,13 +13,13 @@ func testPlanMaker() PlanMaker {
 
 func testIntent() model.Intent {
 	return model.Intent{
-		ID:         model.NewIntentID(),
-		Type:       model.IntentTypeResearch,
-		Entity:     "Company X",
-		CrawlDepth: 2,
-		TaskDepth:  3,
+		ID:           model.NewIntentID(),
+		Type:         model.IntentTypeResearch,
+		Entity:       "Company X",
+		CrawlDepth:   2,
+		TaskDepth:    3,
 		EffortBudget: 500,
-		MaxReplans: 3,
+		MaxReplans:   3,
 	}
 }
 
@@ -81,13 +81,21 @@ func TestReplanContradictionProducesVerifyAndReconcile(t *testing.T) {
 
 func TestReplanMissingPrimaryProducesDiscover(t *testing.T) {
 	pm := testPlanMaker()
-	st := NewResearchState(activeSession(), basePlan(), config.Defaults())
+	sess := activeSession()
+	sess.Intent.Seeds = []string{"https://example.com"}
+	st := NewResearchState(sess, basePlan(), config.Defaults())
 	st.Evidence = EvidenceCounts{MissingPrimary: 4}
 	delta := pm.Replan(*st, ReplanTrigger{Kind: ReplanTriggerMissingPrimary, MissingTopic: "revenue"})
 	n := 0
 	for _, tk := range delta.Add {
 		if tk.Type == model.TaskTypeDiscover {
 			n++
+			if tk.URL == nil {
+				t.Errorf("discover task %d: URL should be set when seed available", n)
+			}
+			if tk.SourceTarget != "example.com" {
+				t.Errorf("discover task %d: SourceTarget = %q want %q", n, tk.SourceTarget, "example.com")
+			}
 		}
 	}
 	if n != 3 {
@@ -97,13 +105,21 @@ func TestReplanMissingPrimaryProducesDiscover(t *testing.T) {
 
 func TestReplanStaleSourceProducesFetchHTTP(t *testing.T) {
 	pm := testPlanMaker()
-	st := NewResearchState(activeSession(), basePlan(), config.Defaults())
+	sess := activeSession()
+	sess.Intent.Seeds = []string{"https://example.com"}
+	st := NewResearchState(sess, basePlan(), config.Defaults())
 	st.Evidence = EvidenceCounts{StaleSources: 5}
 	delta := pm.Replan(*st, ReplanTrigger{Kind: ReplanTriggerStaleSource})
 	n := 0
 	for _, tk := range delta.Add {
 		if tk.Type == model.TaskTypeFetchHTTP {
 			n++
+			if tk.URL == nil {
+				t.Errorf("fetch-http task %d: URL should be set when seed available", n)
+			}
+			if tk.SourceTarget != "example.com" {
+				t.Errorf("fetch-http task %d: SourceTarget = %q want %q", n, tk.SourceTarget, "example.com")
+			}
 		}
 	}
 	if n != 2 {
@@ -113,14 +129,28 @@ func TestReplanStaleSourceProducesFetchHTTP(t *testing.T) {
 
 func TestReplanCoverageGapAndManual(t *testing.T) {
 	pm := testPlanMaker()
-	st := NewResearchState(activeSession(), basePlan(), config.Defaults())
+	sess := activeSession()
+	sess.Intent.Seeds = []string{"https://example.com"}
+	st := NewResearchState(sess, basePlan(), config.Defaults())
 	d1 := pm.Replan(*st, ReplanTrigger{Kind: ReplanTriggerCoverageGap})
 	if len(d1.Add) != 1 || d1.Add[0].Type != model.TaskTypeDiscover {
 		t.Errorf("coverage gap should add one discover, got %+v", d1.Add)
 	}
+	if d1.Add[0].URL == nil {
+		t.Error("coverage gap discover task URL should be set when seed available")
+	}
+	if d1.Add[0].SourceTarget != "example.com" {
+		t.Errorf("coverage gap discover SourceTarget = %q want %q", d1.Add[0].SourceTarget, "example.com")
+	}
 	d2 := pm.Replan(*st, ReplanTrigger{Kind: ReplanTriggerManual})
 	if len(d2.Add) != 1 || d2.Add[0].Type != model.TaskTypeDiscover {
 		t.Errorf("manual should add one discover, got %+v", d2.Add)
+	}
+	if d2.Add[0].URL == nil {
+		t.Error("manual discover task URL should be set when seed available")
+	}
+	if d2.Add[0].SourceTarget != "example.com" {
+		t.Errorf("manual discover SourceTarget = %q want %q", d2.Add[0].SourceTarget, "example.com")
 	}
 }
 
@@ -166,7 +196,7 @@ func TestMergePlanAddAndDrop(t *testing.T) {
 	plan.Phases[1].Tasks = []model.TaskID{"t1"}
 
 	merged := MergePlan(*plan, model.PlanDelta{
-		Add: []model.Task{t2, t3},
+		Add:  []model.Task{t2, t3},
 		Drop: []model.TaskID{"seed1"},
 	})
 
