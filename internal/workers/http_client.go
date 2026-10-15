@@ -3,6 +3,7 @@ package workers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -52,6 +53,9 @@ func (c *netHTTPClient) Fetch(ctx context.Context, req manager.FetchRequest) (ma
 	maxRedirects := c.maxRedirects
 	if req.MaxRedirects > 0 {
 		maxRedirects = req.MaxRedirects
+	}
+	if req.URL == nil {
+		return manager.FetchResponse{}, fmt.Errorf("fetch error: task URL is nil")
 	}
 	if ShouldDeny(req.URL, c.src) {
 		return manager.FetchResponse{StatusCode: http.StatusForbidden, FinalURL: req.URL.String()}, nil

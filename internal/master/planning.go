@@ -2,6 +2,7 @@ package master
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"draw/internal/config"
@@ -56,44 +57,67 @@ func (p PlanMaker) Replan(state ResearchState, trigger ReplanTrigger) model.Plan
 	case ReplanTriggerContradiction:
 		n := minInt(state.Evidence.Contradictions, 3)
 		for i := 0; i < n; i++ {
-			delta.Add = append(delta.Add, p.newTask(model.TaskTypeVerify, session, intent, rk, i, 50))
+			delta.Add = append(delta.Add, p.newTask(model.TaskTypeVerify, session, intent, trigger, rk, i, 50))
 		}
-		delta.Add = append(delta.Add, p.newTask(model.TaskTypeReconcile, session, intent, rk, n, 40))
+		delta.Add = append(delta.Add, p.newTask(model.TaskTypeReconcile, session, intent, trigger, rk, n, 40))
 	case ReplanTriggerMissingPrimary:
 		n := minInt(state.Evidence.MissingPrimary, 3)
 		for i := 0; i < n; i++ {
-			delta.Add = append(delta.Add, p.newTask(model.TaskTypeDiscover, session, intent, rk, i, 60))
+			delta.Add = append(delta.Add, p.newTask(model.TaskTypeDiscover, session, intent, trigger, rk, i, 60))
 		}
 	case ReplanTriggerStaleSource:
 		n := minInt(state.Evidence.StaleSources, 2)
 		for i := 0; i < n; i++ {
-			delta.Add = append(delta.Add, p.newTask(model.TaskTypeFetchHTTP, session, intent, rk, i, 55))
+			delta.Add = append(delta.Add, p.newTask(model.TaskTypeFetchHTTP, session, intent, trigger, rk, i, 55))
 		}
 	case ReplanTriggerCoverageGap:
-		delta.Add = append(delta.Add, p.newTask(model.TaskTypeDiscover, session, intent, rk, 0, 50))
+		delta.Add = append(delta.Add, p.newTask(model.TaskTypeDiscover, session, intent, trigger, rk, 0, 50))
 	case ReplanTriggerManual:
-		delta.Add = append(delta.Add, p.newTask(model.TaskTypeDiscover, session, intent, rk, 0, 100))
+		delta.Add = append(delta.Add, p.newTask(model.TaskTypeDiscover, session, intent, trigger, rk, 0, 100))
 	}
 
+	// Drop replan DISCOVER/FETCH_HTTP tasks that have no concrete seed URL; these
+	// cannot be executed without a target and would crash downstream fetchers.
+	cleaned := delta.Add[:0]
+	for _, t := range delta.Add {
+		if (t.Type == model.TaskTypeDiscover || t.Type == model.TaskTypeFetchHTTP) && t.URL == nil {
+			continue
+		}
+		cleaned = append(cleaned, t)
+	}
+	delta.Add = cleaned
 	if len(delta.Add) == 0 {
 		delta.Add = nil
 	}
 	return delta
 }
 
-func (p PlanMaker) newTask(tt model.TaskType, session model.SessionID, intent model.Intent, rk string, idx, priority int) model.Task {
-	return model.Task{
-		ID:           model.NewTaskID(),
-		SessionID:    session,
-		Type:         tt,
-		State:        model.TaskStateReady,
-		Priority:     priority,
-		SourceClass:  model.SourceClassUnknown,
-		CrawlDepth:   intent.CrawlDepth,
-		TaskDepth:    intent.TaskDepth,
+func (p PlanMaker) newTask(tt model.TaskType, session model.SessionID, intent model.Intent, trigger ReplanTrigger, rk string, idx, priority int) model.Task {
+	t := model.Task{
+		ID:            model.NewTaskID(),
+		SessionID:     session,
+		Type:          tt,
+		State:         model.TaskStateReady,
+		Priority:      priority,
+		SourceClass:   model.SourceClassUnknown,
+		CrawlDepth:    intent.CrawlDepth,
+		TaskDepth:     intent.TaskDepth,
 		EstimatedCost: p.cost(tt),
-		TaskKey:      fmt.Sprintf("replan:%s:%s:%d", strings.ToLower(string(tt)), rk, idx),
+		TaskKey:       fmt.Sprintf("replan:%s:%s:%d", strings.ToLower(string(tt)), rk, idx),
 	}
+	// DISCOVER/FETCH_HTTP require a concrete URL to fetch — only set it when a usable seed exists.
+	// trigger.MissingTopic is free-form topic text (e.g. "unknown", "climate-policy"), never a valid domain,
+	// so it is intentionally ignored here: we drop replan discovery tasks lacking a concrete seed URL
+	// rather than synthesizing malformed URLs that would crash the HTTP fetch layer.
+	if tt == model.TaskTypeDiscover || tt == model.TaskTypeFetchHTTP {
+		if len(intent.Seeds) > 0 {
+			if u, err := url.Parse(intent.Seeds[0]); err == nil && u.Host != "" {
+				t.URL = u
+				t.SourceTarget = u.Host
+			}
+		}
+	}
+	return t
 }
 
 func (p PlanMaker) cost(tt model.TaskType) int {
